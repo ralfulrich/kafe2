@@ -66,3 +66,82 @@ class Contour(object):
     def sigma(self):
         return self._sigma
     
+    def is_similar_to(self, another_contour):
+        if another_contour is None:
+            raise ContourException("another_contour must not be None.")
+        if self.xy_points is None:
+            if another_contour.xy_points is None:
+                return Contour._compare_grid_to_grid(self, another_contour)
+            else:
+                return Contour._compare_grid_to_xy(self, another_contour)
+        else:
+            if another_contour.xy_points is None:
+                return Contour._compare_grid_to_xy(another_contour, self)
+            else:
+                return Contour._compare_xy_to_xy(another_contour, self)
+
+    @staticmethod
+    def _compare_xy_to_xy(xy_contour_1, xy_contour_2):
+        _length_1 = xy_contour_1.xy_points.shape[1]
+        _length_2 = xy_contour_2.xy_points.shape[1]
+        print _length_1, _length_2
+        if _length_1 > _length_2:
+            _coarse_contour = xy_contour_2.xy_points
+            _coarse_length = _length_2
+            _fine_contour = xy_contour_1.xy_points
+            _fine_length = _length_1
+        else:
+            _coarse_contour = xy_contour_1.xy_points
+            _coarse_length = _length_1
+            _fine_contour = xy_contour_2.xy_points
+            _fine_length = _length_2
+
+        _coarse_points = _coarse_contour.T
+        _fine_points = _fine_contour.T
+
+        _coarse_index = 0
+        _squared_distances = (_fine_contour[0] - _coarse_points[0,0]) ** 2 + (_fine_contour[1] - _coarse_points[0,1]) ** 2
+        _min_index = np.argmin(_squared_distances)
+        _goal_point_fine = _fine_points[_min_index - 1]
+        _goal_point_coarse = _coarse_points[-1]
+        
+        _current_point = _fine_points[_min_index - 1]
+        _fine_index = _min_index
+        _coarse_index = 0
+        
+        _reached_goal_fine = False
+        _reached_goal_coarse = False
+        
+        count = 0
+        while True:
+            count += 1
+            if np.sum((_current_point - _fine_points[_fine_index]) ** 2) < np.sum((_current_point - _coarse_points[_coarse_index]) ** 2):
+                if _reached_goal_fine:
+                    return False
+                _current_point = _fine_points[_fine_index]
+                _fine_index = (_fine_index + 1) % _fine_length
+                print count, "fine", _current_point
+                if _current_point[0] == _goal_point_fine[0] and _current_point[1] == _goal_point_fine[1]:
+                    _reached_goal_fine = True
+
+            else:
+                if _reached_goal_coarse:
+                    return False
+                _current_point = _coarse_points[_coarse_index]
+                _coarse_index = (_coarse_index + 1) % _coarse_length
+                print count, "coarse", _current_point
+                if _current_point[0] == _goal_point_coarse[0] and _current_point[1] == _goal_point_coarse[1]:
+                    _reached_goal_coarse = True
+
+            if _reached_goal_fine and _reached_goal_coarse:
+                return True
+            
+    @staticmethod
+    def _compare_grid_to_xy(grid_contour, xy_contour):
+        return False
+    
+    @staticmethod
+    def _compare_grid_to_grid(grid_contour_1, grid_contour_2):
+        return False
+    
+    
