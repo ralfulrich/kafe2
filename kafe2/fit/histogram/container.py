@@ -136,7 +136,7 @@ class HistContainer(IndexedContainer):
     @property
     def n_entries(self):
         """the number of entries"""
-        return len(self._processed_entries) + len(self._unprocessed_entries)
+        return np.sum(self._idx_data) + len(self._unprocessed_entries)
 
     @property
     def data(self):
@@ -206,16 +206,16 @@ class HistContainer(IndexedContainer):
     # -- public methods
 
     def fill(self, entries):
-       """
-       Fill new entries into the histogram.
+        """
+        Fill new entries into the histogram.
 
-       :param entries: list of entries
-       :type entries: list of floats
-       """
-       try:
-           self._unprocessed_entries += list(entries)
-       except TypeError:
-           self._unprocessed_entries.append(entries)
+        :param entries: list of entries
+        :type entries: list of floats
+        """
+        try:
+            self._unprocessed_entries += list(entries)
+        except TypeError:
+            self._unprocessed_entries.append(entries)
 
     def rebin(self, new_bin_edges):
         """
@@ -230,8 +230,35 @@ class HistContainer(IndexedContainer):
             raise HistContainerException(
                 "Invalid bin edge specification! Edge sequence must be sorted in ascending order!")
         self._bin_edges = _new_bin_edges
-        self._idx_data = np.zeros(len(self._bin_edges) -1 + 2)
+        self._idx_data = np.zeros(len(self._bin_edges) - 1 + 2)
+        self._bin_range = (_new_bin_edges[0], _new_bin_edges[-1])
 
         # mark all entries as unprocessed
         self._unprocessed_entries += self._processed_entries
         self._processed_entries = []
+
+    def set_bins(self, bin_heights, bin_edges=None, underflow=0, overflow=0):
+        """
+        Set the bin heights according to a pre-calculated histogram
+        :param bin_heights: Heights of the bins
+        :type bin_heights: list of int
+        :param bin_edges: List of new bin edges in ascending order
+        :type bin_edges: list of float
+        :param underflow: Number of entries in the underflow bin
+        :type underflow: int
+        :param overflow: Number of entries in the overflow bin
+        :type overflow: int
+        """
+        _new_data = np.array(bin_heights)
+        if len(_new_data.shape) != 1:
+            raise HistContainerException('Invalid dimensions for bin heights. '
+                                         'Got {}-d array, expected 1-d array'.format(len(_new_data.shape)))
+        if bin_edges is not None:
+            self.rebin(bin_edges)
+        _new_data = np.append(np.insert(_new_data, 0, underflow), overflow)
+        if len(_new_data) != len(self._idx_data):
+            raise HistContainerException('Length of bin entries does not match binning. '
+                                         'Got {}, expected {}'.format(len(_new_data)-2, len(self._idx_data)-2))
+        self._idx_data = _new_data
+        self._processed_entries = []
+        self._unprocessed_entries = []
