@@ -131,7 +131,11 @@ class CovMat(object):
         """
         if self._cor_mat is None:
             _sqrt_vars = np.sqrt(np.diag(self.mat))
-            self._cor_mat = self.mat / np.outer(_sqrt_vars, _sqrt_vars)
+            if np.all(_sqrt_vars==0):
+                self._cor_mat = np.eye(self.mat.shape[0])
+            else:
+                self._cor_mat = self.mat / np.outer(_sqrt_vars, _sqrt_vars)
+
         return self._cor_mat
 
     @property
