@@ -19,7 +19,7 @@ class XYContainer(IndexedContainer):
 
     """
     _AXIS_SPEC_DICT = {0:0, 1:1, '0':0, '1':1, 'x':0, 'y':1}
-    
+
     #TODO Why does the XYContainer constructor require data while
     #     HistContainer and IndexedContainer don't?
     def __init__(self, x_data, y_data, dtype=float):
@@ -39,6 +39,7 @@ class XYContainer(IndexedContainer):
         self._xy_data = np.array([x_data, y_data], dtype=dtype)
         self._error_dicts = {}
         self._xy_total_errors = None
+        self._full_cor_split_system = None
 
 
     # -- private methods
@@ -78,60 +79,68 @@ class XYContainer(IndexedContainer):
     def _clear_total_error_cache(self):
         """recalculate total errors next time they are needed"""
         self._xy_total_errors = None
+        self._full_cor_split_system = None
 
-    def _calculate_uncor_error_cov_mat(self, axis):
-        #calculate y uncorrelated covariance matrix
+    def _calculate_uncor_cov_mat(self, axis):
+        """calculate uncorrelated part of the covariance matrix"""
+
         _sz = self.size
         _tmp_uncor_cov_mat = np.zeros((_sz, _sz))
+
         for _err_dict in self._error_dicts.values():
+            # skip disabled errors
             if not _err_dict['enabled']:
                 continue
+
+            # skip error for other axes
             if not _err_dict['axis'] == axis:
                 continue
+
+            # retrieve error object
             _err = _err_dict["err"]
-            if isinstance(_err, MatrixGaussianError):
-                _tmp_uncor_cov_mat+=_err.cov_mat
+
+            if isinstance(_err, MatrixGaussianError) or not _err_dict['splittable']:
+                # cannot decorrelate full matrix errors: count as uncorrelated
+                _tmp_uncor_cov_mat += _err.cov_mat
             else:
-                _tmp_uncor_cov_mat+=_err.cov_mat_uncor
+                # sum up uncorrelated parts
+                _tmp_uncor_cov_mat += _err.cov_mat_uncor
+
         return np.array(_tmp_uncor_cov_mat)
 
-    def _calculate_y_nuisance_cor_design_matrix(self):
-        """calculate the design matrix containing the correlated parts of all y uncertainties"""
+    def _calculate_cor_nuisance_des_mat(self, axis):
+        """calculate the design matrix describing a linear map between
+        the nuisance parameters for the correlated uncertainties
+        and the model predictions for an axis"""
 
-        _y_cor_errors = self.get_matching_errors(
+        # retrieve all fully correlated errors for axis
+        _axis_cor_errors = self.get_matching_errors(
             matching_criteria=dict(
-                axis=1,
+                axis=axis,
                 enabled=True,
-                correlated=True
+                correlated=True,
+                splittable=True
             )
         )
 
         _data_size = self.size
-        _err_size = len(_y_cor_errors)
-        _nuisance_ycor_design_matrix = np.zeros((_err_size, _data_size))
-        for _col, (_err_name, _err) in enumerate(six.iteritems(_y_cor_errors)):
-            _nuisance_ycor_design_matrix[_col, :] = _err.error_cor
+        _err_size = len(_axis_cor_errors)
 
-        return np.array(_nuisance_ycor_design_matrix)
+        _des_mat = np.zeros((_err_size, _data_size))
+        for _col, (_err_name, _err) in enumerate(six.iteritems(_axis_cor_errors)):
+            _des_mat[_col, :] = _err.error_cor
 
-    # def _calculate_x_nuisance_cor_design_matrix(self):
-    #     """calculate the design matrix containing the correlated parts of all x uncertainties"""
-    #
-    #     _x_cor_errors = self.get_matching_errors(
-    #         matching_criteria=dict(
-    #             axis=0,
-    #             enabled=True,
-    #             correlated=True
-    #         )
-    #     )
-    #
-    #     _data_size = self.size
-    #     _err_size = len(_x_cor_errors)
-    #     _nuisance_xcor_design_matrix = np.zeros((_err_size, _data_size))
-    #     for _col, (_err_name, _err) in enumerate(six.iteritems(_x_cor_errors)):
-    #         _nuisance_xcor_design_matrix[_col, :] = _err.error_cor
-    #
-    #     return np.array(_nuisance_xcor_design_matrix)
+        return _des_mat
+
+    def _calculate_full_cor_split_system(self):
+        self._full_cor_split_system = [
+            (
+                self._calculate_cor_nuisance_des_mat(axis),
+                self._calculate_uncor_cov_mat(axis)
+            )
+            for axis in (0, 1)
+        ]
+
 
     # -- public properties
 
@@ -254,7 +263,7 @@ class XYContainer(IndexedContainer):
     @property
     def y_uncor_cov_mat(self):
         # y uncorrelated covariance matrix
-        _y_uncor_cov_mat = self._calculate_uncor_error_cov_mat(axis=1)
+        _y_uncor_cov_mat = self._calculate_uncor_cov_mat(axis=1)
         return _y_uncor_cov_mat
 
     @property
@@ -263,31 +272,18 @@ class XYContainer(IndexedContainer):
         return np.linalg.inv(self.y_uncor_cov_mat)
 
     @property
-    def _y_nuisance_cor_design_mat(self):
-         """design matrix containing the correlated parts of all y uncertainties"""
-         _nuisance_y_cor_cov_mat = self._calculate_y_nuisance_cor_design_matrix()
-         return _nuisance_y_cor_cov_mat
-
-    @property
     def x_uncor_cov_mat(self):
         # x uncorrelated covariance matrix
-        _x_uncor_cov_mat = self._calculate_uncor_error_cov_mat(axis=0)
-        return _x_uncor_cov_mat
+        return self._calculate_uncor_cov_mat(axis=0)
 
     @property
     def x_uncor_cov_mat_inverse(self):
         # x uncorrelated inverse covariance matrix
         return np.linalg.inv(self.x_uncor_cov_mat)
 
-    # @property TODO: correlated x-errors
-    # def nuisance_x_cor_cov_mat(self):
-    #      """design matrix containing the correlated parts of all x uncertainties"""
-    #     _nuisance_x_cor_cov_mat = self._calculate_nuisance_x_cor_error_cov_mat()
-    #     return _nuisance_x_cor_cov_mat
-
     # -- public methods
 
-    def add_simple_error(self, axis, err_val, name=None, correlation=0, relative=False):
+    def add_simple_error(self, axis, err_val, name=None, correlation=0, relative=False, splittable=True):
         """
         Add a simple uncertainty source for an axis to the data container.
         Returns an error id which uniquely identifies the created error source.
@@ -303,6 +299,8 @@ class XYContainer(IndexedContainer):
         :type correlation: float
         :param relative: if ``True``, **err_val** will be interpreted as a *relative* uncertainty
         :type relative: bool
+        :param splittable: if ``False``, the error will be marked as not splittable (see `set_error_splittable`)
+        :type splittable: bool or ``None``
         :return: error id
         :rtype: int
         """
@@ -317,7 +315,7 @@ class XYContainer(IndexedContainer):
 
         _err = SimpleGaussianError(err_val=err_val, corr_coeff=correlation,
                                    relative=relative, reference=self._get_data_for_axis(_axis))
-        _name = self._add_error_object(name=name, error_object=_err, axis=_axis)
+        _name = self._add_error_object(name=name, error_object=_err, axis=_axis, splittable=splittable and (correlation != 0))
         return _name
 
     def add_matrix_error(self, axis, err_matrix, matrix_type, name=None, err_val=None, relative=False):
@@ -345,7 +343,7 @@ class XYContainer(IndexedContainer):
             err_matrix=err_matrix, matrix_type=matrix_type, err_val=err_val,
             relative=relative, reference=self._get_data_for_axis(_axis)
         )
-        _name = self._add_error_object(name=name, error_object=_err, axis=_axis)
+        _name = self._add_error_object(name=name, error_object=_err, axis=_axis, splittable=False)
         return _name
 
     def get_total_error(self, axis):
@@ -362,6 +360,66 @@ class XYContainer(IndexedContainer):
         if self._xy_total_errors is None:
             self._calculate_total_error()
         return self._xy_total_errors[_axis]
+
+    def split_errors(self, axis):
+        """Separate out fully correlated errors for an axis.
+
+        Returns two matrices `G` and `U`, which are related to the
+        total covariance matrix `V` by:
+
+        .. math::
+            V = G G^T + U
+
+        The first matrix `G` contains the fully correlated components
+        of the errors. `G(i, k)` represents the change in the `i`-th
+        data point due to the `k`-th fully correlated error source.
+
+        The second matrix `U` is the covariance matrix containing
+        the remaining (non-fully-correlated) error contributions.
+        """
+        _axis = self._find_axis_raise(axis)
+        if self._full_cor_split_system is None:
+            self._calculate_full_cor_split_system()
+        return self._full_cor_split_system[_axis]
+
+    def get_shift_coefficients(self, axis, residuals):
+        r"""Compute the shift coefficients for which a `residuals`
+        vector shifted by all splittable fully correlated uncertainties
+        together with the reduced covariance matrix containing only
+        unsplittable or non-fully correlated uncertainties
+        and a gaussian penalty for the coefficients themselves
+        would yield the same gaussian penalty as the `residuals` with
+        the full covariance matrix.
+
+        Only the matrices for axis `axis` are considered.
+
+        In short, this method finds the solution vector `b` to the equation:
+
+        .. math::
+            r^T V^{-1} r == (r - G b)^T U^{-1} (r - G b) + b^T b
+
+        In the above, `r` is the residuals vector, `V` is the full covariance
+        matrix, and `G` and `U` are the matrices of the split errors system
+        as returned by `split_errors`.
+
+        :param axis: ``'x'``/``0`` or ``'y'``/``1``
+        :param residuals: str or int
+        :return: array of expected nuisance
+        :rtype: numpy.array
+        """
+        _v = self.get_total_error(axis).cov_mat
+
+        _g, _u = self.split_errors(axis)
+
+        try:
+            _uinv = np.linalg.inv(_u)
+        except np.linalg.LinAlgError:
+            raise np.linalg.LinAlgError(
+                "Cannot get shift coefficients: unsplittable "
+                "part of covariance matrix is singular!")
+
+        _eye = np.eye(_g.shape[0])
+        return np.linalg.inv(_eye + _g.dot(_uinv).dot(_g.T)).dot(_g).dot(_uinv).dot(residuals)
 
     @property
     def has_x_errors(self):

@@ -2,6 +2,7 @@ import numpy as np
 import six
 
 from ...core.error import MatrixGaussianError, SimpleGaussianError
+from ..xy.container import XYContainer
 from ..indexed import IndexedContainer
 from ..indexed.container import IndexedContainerException
 
@@ -13,7 +14,7 @@ class XYMultiContainerException(IndexedContainerException):
     pass
 
 
-class XYMultiContainer(IndexedContainer):
+class XYMultiContainer(XYContainer):
     """
     This object is a specialized data container for *xy* data associated with 1 or more datasets.
 
@@ -57,7 +58,7 @@ class XYMultiContainer(IndexedContainer):
 
         self._error_dicts = {}
         self._xy_total_errors = None
-
+        self._full_cor_split_system = None
 
     # -- private methods
 
@@ -73,97 +74,9 @@ class XYMultiContainer(IndexedContainer):
             raise XYMultiContainerException("No axis with id %r!" % (axis_spec,))
         return _axis_id
 
-    def _get_data_for_axis(self, axis_id):
-        return self._xy_data[axis_id]
-
-    def _calculate_total_error(self):
-        _sz = self.size
-        _tmp_cov_mat_x = np.zeros((_sz, _sz))
-        _tmp_cov_mat_y = np.zeros((_sz, _sz))
-        for _err_dict in self._error_dicts.values():
-            if not _err_dict['enabled']:
-                continue
-            assert _err_dict['axis'] in (0, 1)
-            if _err_dict['axis'] == 0:
-                _tmp_cov_mat_x += _err_dict['err'].cov_mat
-            elif _err_dict['axis'] == 1:
-                _tmp_cov_mat_y += _err_dict['err'].cov_mat
-
-        _total_err_x = MatrixGaussianError(_tmp_cov_mat_x, 'cov', relative=False, reference=self.x)
-        _total_err_y = MatrixGaussianError(_tmp_cov_mat_y, 'cov', relative=False, reference=self.y)
-        self._xy_total_errors = [_total_err_x, _total_err_y]
-
-    def _clear_total_error_cache(self):
-        """recalculate total errors next time they are needed"""
-        self._xy_total_errors = None
-
-    def _calculate_uncor_error_cov_mat(self, axis):
-        #calculate y uncorrelated covariance matrix
-        _sz = self.size
-        _tmp_uncor_cov_mat = np.zeros((_sz, _sz))
-        for _err_dict in self._error_dicts.values():
-            if not _err_dict['enabled']:
-                continue
-            if not _err_dict['axis'] == axis:
-                continue
-            _err = _err_dict["err"]
-            if isinstance(_err, MatrixGaussianError):
-                _tmp_uncor_cov_mat+=_err.cov_mat
-            else:
-                _tmp_uncor_cov_mat+=_err.cov_mat_uncor
-        return np.array(_tmp_uncor_cov_mat)
-
-    def _calculate_y_nuisance_cor_design_matrix(self):
-        """calculate the design matrix containing the correlated parts of all y uncertainties"""
-
-        _y_cor_errors = self.get_matching_errors(
-            matching_criteria=dict(
-                axis=1,
-                enabled=True,
-                correlated=True
-            )
-        )
-
-        _data_size = self.size
-        _err_size = len(_y_cor_errors)
-        _nuisance_ycor_design_matrix = np.zeros((_err_size, _data_size))
-        for _col, (_err_name, _err) in enumerate(six.iteritems(_y_cor_errors)):
-            _nuisance_ycor_design_matrix[_col, :] = _err.error_cor
-
-        return np.array(_nuisance_ycor_design_matrix)
-
-    # def _calculate_x_nuisance_cor_design_matrix(self):
-    #     """calculate the design matrix containing the correlated parts of all x uncertainties"""
-    #
-    #     _x_cor_errors = self.get_matching_errors(
-    #         matching_criteria=dict(
-    #             axis=0,
-    #             enabled=True,
-    #             correlated=True
-    #         )
-    #     )
-    #
-    #     _data_size = self.size
-    #     _err_size = len(_x_cor_errors)
-    #     _nuisance_xcor_design_matrix = np.zeros((_err_size, _data_size))
-    #     for _col, (_err_name, _err) in enumerate(six.iteritems(_x_cor_errors)):
-    #         _nuisance_xcor_design_matrix[_col, :] = _err.error_cor
-    #
-    #     return np.array(_nuisance_xcor_design_matrix)
-
     # -- public properties
 
-    @property
-    def size(self):
-        """total number of data points"""
-        return self._xy_data.shape[1]
-
-    @property
-    def data(self):
-        """container data (both *x* and *y*, two-dimensional :py:obj:`numpy.ndarray`)"""
-        return self._xy_data.copy()  # copy to ensure no modification by user
-
-    @data.setter
+    @XYContainer.data.setter
     def data(self, new_data):
         #TODO new_data and data_indices can be inconsistent
         _new_data = np.asarray(new_data)
@@ -178,12 +91,7 @@ class XYMultiContainer(IndexedContainer):
                 "XYMultiContainer data length must be 2 in at least one axis! Got shape: %r..." % (_new_data.shape,))
         self._clear_total_error_cache()
 
-    @property
-    def x(self):
-        """container *x* data (one-dimensional :py:obj:`numpy.ndarray`)"""
-        return self._get_data_for_axis(0)
-
-    @x.setter
+    @XYContainer.x.setter
     def x(self, new_x):
         _new_x_data = np.squeeze(np.array(new_x))
         if len(_new_x_data.shape) > 1:
@@ -194,35 +102,7 @@ class XYMultiContainer(IndexedContainer):
                 _err_dict['err'].reference = self._get_data_for_axis(0)
         self._clear_total_error_cache()
 
-    @property
-    def x_err(self):
-        """absolute total data *x*-uncertainties (one-dimensional :py:obj:`numpy.ndarray`)"""
-        _total_error_x = self.get_total_error(axis=0)
-        return _total_error_x.error
-
-    @property
-    def x_cov_mat(self):
-        """absolute data *x* covariance matrix (:py:obj:`numpy.matrix`)"""
-        _total_error_x = self.get_total_error(axis=0)
-        return _total_error_x.cov_mat
-
-    @property
-    def x_cov_mat_inverse(self):
-        """inverse of absolute data *x* covariance matrix (:py:obj:`numpy.matrix`), or ``None`` if singular"""
-        _total_error_x = self.get_total_error(axis=0)
-        return _total_error_x.cov_mat_inverse
-
-    @property
-    def x_cor_mat(self):
-        """absolute data *x* correlation matrix (:py:obj:`numpy.matrix`)"""
-        _total_error_x = self.get_total_error(axis=0)
-        return _total_error_x.cor_mat
-
-    @property
-    def y(self):
-        return self._get_data_for_axis(1)
-
-    @y.setter
+    @XYContainer.y.setter
     def y(self, new_y):
         """container *y* data (one-dimensional :py:obj:`numpy.ndarray`)"""
         _new_y_data = np.squeeze(np.array(new_y))
@@ -234,84 +114,14 @@ class XYMultiContainer(IndexedContainer):
                 _err_dict['err'].reference = self._get_data_for_axis(1)
         self._clear_total_error_cache()
 
-    @property
-    def y_err(self):
-        """absolute total data *y*-uncertainties (one-dimensional :py:obj:`numpy.ndarray`)"""
-        _total_error_y = self.get_total_error(axis=1)
-        return _total_error_y.error
-
-    @property
-    def y_cov_mat(self):
-        """absolute data *y* covariance matrix (:py:obj:`numpy.matrix`)"""
-        _total_error_y = self.get_total_error(axis=1)
-        return _total_error_y.cov_mat
-
-    @property
-    def y_cov_mat_inverse(self):
-        """inverse of absolute data *y* covariance matrix (:py:obj:`numpy.matrix`), or ``None`` if singular"""
-        _total_error_y = self.get_total_error(axis=1)
-        return _total_error_y.cov_mat_inverse
-
-    @property
-    def y_cor_mat(self):
-        """absolute data *y* correlation matrix (:py:obj:`numpy.matrix`)"""
-        _total_error_y = self.get_total_error(axis=1)
-        return _total_error_y.cor_mat
-
-    @property
-    def x_range(self):
-        """x data range across all datasets"""
-        _x = self.x
-        return np.min(_x), np.max(_x)
-
     def get_x_range(self, index):
         """x data range for the dataset with the specified index"""
         _x = self.x[self.data_indices[index] : self.data_indices[index + 1]]
         return np.min(_x), np.max(_x)
 
-    @property
-    def y_range(self):
-        """y data range across all datasets"""
-        _y = self.y
-        return np.min(_y), np.max(_y)
-
-    @property
-    def y_uncor_cov_mat(self):
-        # y uncorrelated covariance matrix
-        _y_uncor_cov_mat = self._calculate_uncor_error_cov_mat(axis=1)
-        return _y_uncor_cov_mat
-
-    @property
-    def y_uncor_cov_mat_inverse(self):
-        # y uncorrelated inverse covariance matrix
-        return np.linalg.inv(self.y_uncor_cov_mat)
-
-    @property
-    def _y_nuisance_cor_design_mat(self):
-        """design matrix containing the correlated parts of all y uncertainties"""
-        _nuisance_y_cor_cov_mat = self._calculate_y_nuisance_cor_design_matrix()
-        return _nuisance_y_cor_cov_mat
-
-    @property
-    def x_uncor_cov_mat(self):
-        # x uncorrelated covariance matrix
-        _x_uncor_cov_mat = self._calculate_uncor_error_cov_mat(axis=0)
-        return _x_uncor_cov_mat
-
-    @property
-    def x_uncor_cov_mat_inverse(self):
-        # x uncorrelated inverse covariance matrix
-        return np.linalg.inv(self.x_uncor_cov_mat)
-
-    # @property TODO: correlated x-errors
-    # def nuisance_x_cor_cov_mat(self):
-    #      """design matrix containing the correlated parts of all x uncertainties"""
-    #     _nuisance_x_cor_cov_mat = self._calculate_nuisance_x_cor_error_cov_mat()
-    #     return _nuisance_x_cor_cov_mat
-
     # -- public methods
 
-    def add_simple_error(self, axis, err_val, name=None, model_index=None, correlation=0, relative=False):
+    def add_simple_error(self, axis, err_val, name=None, model_index=None, correlation=0, relative=False, splittable=True):
         """
         Add a simple uncertainty source for an axis to the data container.
         Returns an error name which uniquely identifies the created error source.
@@ -330,6 +140,8 @@ class XYMultiContainer(IndexedContainer):
         :type correlation: float
         :param relative: if ``True``, **err_val** will be interpreted as a *relative* uncertainty
         :type relative: bool
+        :param splittable: if ``False``, the error will be marked as not splittable (see `set_error_splittable`)
+        :type splittable: bool or ``None``
         :return: error name
         :rtype: str
         """
@@ -340,7 +152,6 @@ class XYMultiContainer(IndexedContainer):
         except AttributeError:
             err_val = np.asarray(err_val, dtype=float)
 
-        
         if model_index is None:
             # if dimensionless numpy array (i.e. float64), add a dimension
             _err_all_datasets = np.ones(self.size) * err_val if err_val.ndim == 0 else err_val
@@ -361,7 +172,7 @@ class XYMultiContainer(IndexedContainer):
                 
         _err = SimpleGaussianError(err_val=_err_all_datasets, corr_coeff=correlation,
                                    relative=relative, reference=self._get_data_for_axis(_axis))
-        _name = self._add_error_object(name=name, model_index=model_index, error_object=_err, axis=_axis)
+        _name = self._add_error_object(name=name, model_index=model_index, error_object=_err, axis=_axis, splittable=splittable and (correlation != 0))
         return _name
 
     def add_matrix_error(self, axis, err_matrix, matrix_type, name=None, model_index=None, err_val=None, relative=False):
@@ -389,48 +200,8 @@ class XYMultiContainer(IndexedContainer):
             err_matrix=err_matrix, matrix_type=matrix_type, err_val=err_val,
             relative=relative, reference=self._get_data_for_axis(_axis)
         )
-        _name = self._add_error_object(name=name, error_object=_err, axis=_axis)
+        _name = self._add_error_object(name=name, error_object=_err, axis=_axis, splittable=False)
         return _name
-
-    def get_total_error(self, axis):
-        """
-        Get the error object representing the total uncertainty for an axis.
-
-        :param axis: ``'x'``/``0`` or ``'y'``/``1``
-        :type axis: str or int
-
-        :return: error object representing the total uncertainty
-        :rtype: :py:class:`~kafe2.core.error.MatrixGaussianError`
-        """
-        _axis = self._find_axis_raise(axis)
-        if self._xy_total_errors is None:
-            self._calculate_total_error()
-        return self._xy_total_errors[_axis]
-
-    @property
-    def has_x_errors(self):
-        """``True`` if at least one *x* uncertainty source is defined for the data container"""
-        for _err_dict in self._error_dicts.values():
-            if _err_dict['axis'] == 0:
-                return True
-        return False
-
-    @property
-    def has_uncor_x_errors(self):
-        """``True`` if at least one *x* uncertainty source, which is not fully correlated, is defined for the data container"""
-        for _err_dict in self._error_dicts.values():
-            if _err_dict['axis'] == 0 and _err_dict['err'].corr_coeff != 1.0:
-                return True
-        return False
-
-    @property
-    def has_y_errors(self):
-        """``True`` if at least one *x* uncertainty source is defined for the data container"""
-        for _err_dict in self._error_dicts.values():
-            if _err_dict['axis'] == 1:
-                return True
-        return False
-
 
     @property
     def data_indices(self):
@@ -451,7 +222,7 @@ class XYMultiContainer(IndexedContainer):
     def get_splice(self, data, index):
         """utility function that splices the given data according to the dataset bounds of the specified index"""
         return data[self.data_indices[index] : self.data_indices[index + 1]]
-    
+
     @property
     def all_datasets_same_size(self):
         """True if all datasets contain the same number of *xy* points"""

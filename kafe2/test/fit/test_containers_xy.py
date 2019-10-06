@@ -162,6 +162,87 @@ class TestDatastoreXY(unittest.TestCase):
         with self.assertRaises(DataContainerException):
             self.data_xy.get_error("MyInexistentYError")
 
+    def test_split_errors(self):
+        for _axis in ('x', 'y'):
+            self.data_xy.add_simple_error(_axis, 1.0, correlation=1)
+            self.data_xy.add_simple_error(_axis, 0.5, correlation=1)
+            self.data_xy.add_simple_error(_axis, 10.0, correlation=0.5)
+            self.data_xy.add_simple_error(_axis, 3.0, correlation=0)
+            _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+            self.data_xy.add_matrix_error(_axis, _a.T.dot(_a), matrix_type='cov')
+
+            _g, _u = self.data_xy.split_errors(axis=_axis)
+            self.assertEqual(_g.shape, (4, 5))
+            self.assertTrue(
+                np.allclose(
+                    _g.T.dot(_g) + _u,
+                    self.data_xy.get_total_error(_axis).cov_mat
+                )
+            )
+
+    def test_split_errors_splittable_on_add(self):
+        for _axis in ('x', 'y'):
+            self.data_xy.add_simple_error(_axis, 1.0, correlation=1)
+            self.data_xy.add_simple_error(_axis, 0.5, correlation=1)
+            self.data_xy.add_simple_error(_axis, 10.0, correlation=0.5, splittable=False)
+            self.data_xy.add_simple_error(_axis, 3.0, correlation=0)
+            _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+            self.data_xy.add_matrix_error(_axis, _a.T.dot(_a), matrix_type='cov')
+
+            _g, _u = self.data_xy.split_errors(axis=_axis)
+            self.assertEqual(_g.shape, (3, 5))
+            self.assertTrue(
+                np.allclose(
+                    _g.T.dot(_g) + _u,
+                    self.data_xy.get_total_error(_axis).cov_mat
+                )
+            )
+
+    def test_set_error_splittable(self):
+        for _axis in ('x', 'y'):
+            self.data_xy.add_simple_error(_axis, 1.0, correlation=1)
+            self.data_xy.add_simple_error(_axis, 0.5, correlation=1)
+            _err_non_splittable = self.data_xy.add_simple_error(_axis, 10.0, correlation=0.5)
+            self.data_xy.add_simple_error(_axis, 3.0, correlation=0)
+
+            _g, _u = self.data_xy.split_errors(axis=_axis)
+            self.assertEqual(_g.shape, (4, 5))
+            self.assertTrue(
+                np.allclose(
+                    _g.T.dot(_g) + _u,
+                    self.data_xy.get_total_error(_axis).cov_mat
+                )
+            )
+
+            self.data_xy.set_error_splittable(_err_non_splittable, False)
+
+            _g, _u = self.data_xy.split_errors(axis=_axis)
+            self.assertEqual(_g.shape, (3, 5))
+            self.assertTrue(
+                np.allclose(
+                    _g.T.dot(_g) + _u,
+                    self.data_xy.get_total_error(_axis).cov_mat
+                )
+            )
+
+            self.data_xy.set_error_splittable(_err_non_splittable)
+
+            _g, _u = self.data_xy.split_errors(axis=_axis)
+            self.assertEqual(_g.shape, (4, 5))
+            self.assertTrue(
+                np.allclose(
+                    _g.T.dot(_g) + _u,
+                    self.data_xy.get_total_error(_axis).cov_mat
+                )
+            )
+
+    def test_set_error_splittable_matrix_raise(self):
+        for _axis in ('x', 'y'):
+            _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+            _err = self.data_xy.add_matrix_error(_axis, _a.T.dot(_a), matrix_type='cov')
+            with self.assertRaises(DataContainerException):
+                self.data_xy.set_error_splittable(_err)
+
 
 class TestDatastoreXYParametricModel(unittest.TestCase):
 

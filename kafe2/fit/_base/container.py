@@ -29,10 +29,11 @@ class DataContainerBase(FileIOMixin, object):
     def __init__(self):
         self._error_dicts = dict()
         self._total_error = None
+        self._full_cor_split_system = None
         super(DataContainerBase, self).__init__()
 
     # -- private methods
-    
+
     @classmethod
     def _get_base_class(cls):
         return DataContainerBase
@@ -43,6 +44,10 @@ class DataContainerBase(FileIOMixin, object):
 
     @abc.abstractmethod
     def _calculate_total_error(self):
+        pass
+
+    @abc.abstractmethod
+    def _calculate_full_cor_split_system(self):
         pass
 
     @abc.abstractmethod
@@ -108,7 +113,7 @@ class DataContainerBase(FileIOMixin, object):
     # error-related methods
 
     def add_simple_error(self, err_val,
-                         name=None, correlation=0, relative=False, reference=None):
+                         name=None, correlation=0, relative=False, reference=None, splittable=True):
         """
         Add a simple uncertainty source to the data container.
         Returns an error id which uniquely identifies the created error source.
@@ -124,6 +129,8 @@ class DataContainerBase(FileIOMixin, object):
         :type relative: bool
         :param reference: the data values to use when computing absolute errors from relative ones (and vice-versa)
         :type reference: iterable of float or ``None``
+        :param splittable: if ``True``, the error will be marked as splittable (see `set_error_splittable`)
+        :type splittable: bool or ``None``
         :return: error name
         :rtype: str
         """
@@ -138,7 +145,7 @@ class DataContainerBase(FileIOMixin, object):
         _err = SimpleGaussianError(err_val=err_val, corr_coeff=correlation,
                                    relative=relative, reference=reference)
 
-        _name = self._add_error_object(name=name, error_object=_err)
+        _name = self._add_error_object(name=name, error_object=_err, splittable=splittable and (correlation != 0))
         return _name
 
     def add_matrix_error(self, err_matrix, matrix_type,
@@ -166,8 +173,65 @@ class DataContainerBase(FileIOMixin, object):
         _err = MatrixGaussianError(err_matrix=err_matrix, matrix_type=matrix_type, err_val=err_val,
                                    relative=relative, reference=reference)
 
-        _name = self._add_error_object(name=name, error_object=_err)
+        _name = self._add_error_object(name=name, error_object=_err, splittable=False)
         return _name
+
+    def split_errors(self):
+        """Separate out fully correlated errors.
+
+        Returns two matrices `G` and `U`, which are related to the
+        total covariance matrix `V` by:
+
+        .. math::
+            V = G G^T + U
+
+        The first matrix `G` contains the fully correlated components
+        of the errors. `G(i, k)` represents the change in the `i`-th
+        data point due to the `k`-th fully correlated error source.
+
+        The second matrix `U` is the covariance matrix containing
+        the remaining (non-fully-correlated) error contributions.
+        """
+        if self._full_cor_split_system is None:
+            self._calculate_full_cor_split_system()
+        return self._full_cor_split_system
+
+    def get_shift_coefficients(self, residuals):
+        r"""Compute the shift coefficients for which a `residuals`
+        vector shifted by all splittable fully correlated uncertainties
+        together with the reduced covariance matrix containing only
+        unsplittable or non-fully correlated uncertainties
+        and a gaussian penalty for the coefficients themselves
+        would yield the same gaussian penalty as the `residuals` with
+        the full covariance matrix.
+
+        In short, this method finds the solution vector `b` to the equation:
+
+        .. math::
+            r^T V^{-1} r == (r - G b)^T U^{-1} (r - G b) + b^T b
+
+        In the above, `r` is the residuals vector, `V` is the full covariance
+        matrix, and `G` and `U` are the matrices of the split errors system
+        as returned by `split_errors`.
+
+        :param axis: ``'x'``/``0`` or ``'y'``/``1``
+        :param residuals: str or int
+        :return: array of expected nuisance
+        :rtype: numpy.array
+        """
+        _v = self.get_total_error().cov_mat
+
+        _g, _u = self.split_errors()
+
+        try:
+            _uinv = np.linalg.inv(_u)
+        except np.linalg.LinAlgError:
+            raise np.linalg.LinAlgError(
+                "Cannot get shift coefficients: unsplittable "
+                "part of covariance matrix is singular!")
+
+        _eye = np.eye(_g.shape[0])
+        return np.squeeze(np.linalg.inv(_eye + _g.dot(_uinv).dot(_g.T)).dot(_g).dot(_uinv).dot(residuals))
 
     def disable_error(self, error_name):
         """
@@ -192,6 +256,51 @@ class DataContainerBase(FileIOMixin, object):
         _err_dict = self._get_error_by_name_raise(error_name)
         _err_dict['enabled'] = True
         self._clear_total_error_cache()
+
+    def set_error_splittable(self, error_name, splittable=True):
+        """
+        Mark a 'simple' uncertainty source as splittable (or not). Splittable uncertainty
+        sources can be split into an uncorrelated and a fully correlated part.
+        The former can be represented by a diagonal covariance matrix and the latter
+        by an uncertainty vector representing a one-sigma Gaussian shift of the
+        data.
+
+        When calling `split_errors`, the fully correlated uncertainty
+        vectors of uncertainties marked as splittable are put together into an uncertainty
+        matrix :math:`G`, while the uncorrelated parts of splittable uncertainties and the
+        covariance matrices of uncertainties marked as unsplittable are added together,
+        yielding the "remainder" covariance matrix :math:`U`. The two matrices relate to
+        the total covariance matrix :math:`V` via:
+
+        .. math::
+            V = GG^T + U
+
+        .. note::
+            Only 'simple' uncertainties can be marked as splittable, since their correlation
+            coefficient is well-defined.
+
+        :param error_name: error name
+        :type error_name: str
+        :param splittable: whether to make error splittable or not
+        :type splittable: bool
+        """
+        _err_dict = self._get_error_by_name_raise(error_name)
+        if not isinstance(_err_dict['err'], SimpleGaussianError) and splittable:
+            raise DataContainerException(
+                "Cannot mark '{}' error '{}' as splittable: "
+                "only possible for 'simple' errors.".format(
+                    _err_dict['err'].__class__.__name__, error_name)
+            )
+        elif _err_dict['err'].corr_coeff == 0:
+            raise DataContainerException(
+                "Cannot mark uncorrelated error '{}' as splittable: "
+                "only possible for errors with a strictly non-zero "
+                "correlation coefficient".format(
+                    error_name, _err_dict['type'])
+            )
+
+        _err_dict['splittable'] = splittable
+        self._full_cor_split_system = None
 
     def get_matching_errors(self, matching_criteria=None, matching_type='equal'):
         """

@@ -123,6 +123,85 @@ class TestDatastoreIndexed(unittest.TestCase):
         with self.assertRaises(DataContainerException):
             self.idx_cont.get_error("MyInexistentError")
 
+    def test_split_errors(self):
+        self.idx_cont.add_simple_error(1.0, correlation=1)
+        self.idx_cont.add_simple_error(0.5, correlation=1)
+        self.idx_cont.add_simple_error(10.0, correlation=0.5)
+        self.idx_cont.add_simple_error(3.0, correlation=0)
+        _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+        self.idx_cont.add_matrix_error(_a.T.dot(_a), matrix_type='cov')
+
+        _g, _u = self.idx_cont.split_errors()
+
+        self.assertEqual(_g.shape, (4, 5))
+
+        self.assertTrue(
+            np.allclose(
+                _g.T.dot(_g) + _u,
+                self.idx_cont.get_total_error().cov_mat
+            )
+        )
+
+    def test_split_errors_splittable_on_add(self):
+        self.idx_cont.add_simple_error(1.0, correlation=1)
+        self.idx_cont.add_simple_error(0.5, correlation=1)
+        self.idx_cont.add_simple_error(10.0, correlation=0.5, splittable=False)
+        self.idx_cont.add_simple_error(3.0, correlation=0)
+        _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+        self.idx_cont.add_matrix_error(_a.T.dot(_a), matrix_type='cov')
+
+        _g, _u = self.idx_cont.split_errors()
+        self.assertEqual(_g.shape, (3, 5))
+        self.assertTrue(
+            np.allclose(
+                _g.T.dot(_g) + _u,
+                self.idx_cont.get_total_error().cov_mat
+            )
+        )
+
+    def test_set_error_splittable(self):
+        self.idx_cont.add_simple_error(1.0, correlation=1)
+        self.idx_cont.add_simple_error(0.5, correlation=1)
+        _err_non_splittable = self.idx_cont.add_simple_error(10.0, correlation=0.5)
+        self.idx_cont.add_simple_error(3.0, correlation=0)
+
+        _g, _u = self.idx_cont.split_errors()
+        self.assertEqual(_g.shape, (4, 5))
+        self.assertTrue(
+            np.allclose(
+                _g.T.dot(_g) + _u,
+                self.idx_cont.get_total_error().cov_mat
+            )
+        )
+
+        self.idx_cont.set_error_splittable(_err_non_splittable, False)
+
+        _g, _u = self.idx_cont.split_errors()
+        self.assertEqual(_g.shape, (3, 5))
+        self.assertTrue(
+            np.allclose(
+                _g.T.dot(_g) + _u,
+                self.idx_cont.get_total_error().cov_mat
+            )
+        )
+
+        self.idx_cont.set_error_splittable(_err_non_splittable)
+
+        _g, _u = self.idx_cont.split_errors()
+        self.assertEqual(_g.shape, (4, 5))
+        self.assertTrue(
+            np.allclose(
+                _g.T.dot(_g) + _u,
+                self.idx_cont.get_total_error().cov_mat
+            )
+        )
+
+    def test_set_error_splittable_matrix_raise(self):
+        _a = np.array([[1.3, 2.2, 3.3, 0.2, 4.2]])
+        _err = self.idx_cont.add_matrix_error(_a.T.dot(_a), matrix_type='cov')
+        with self.assertRaises(DataContainerException):
+            self.idx_cont.set_error_splittable(_err)
+
 
 
 class TestDatastoreIndexedParametricModel(unittest.TestCase):
@@ -139,7 +218,7 @@ class TestDatastoreIndexedParametricModel(unittest.TestCase):
         self._ref_data = self._ref_model_func(*self._ref_params)
 
         self.idx_param_model = IndexedParametricModel(
-            model_func=IndexedModelFunction(self._ref_model_func), 
+            model_func=IndexedModelFunction(self._ref_model_func),
             model_parameters=self._ref_params)
 
         self._test_params = (3.4, -5.23)

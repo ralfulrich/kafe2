@@ -1,4 +1,5 @@
 import numpy as np
+import six
 
 from ...core.error import MatrixGaussianError, SimpleGaussianError
 from .._base import DataContainerException, DataContainerBase
@@ -28,22 +29,79 @@ class IndexedContainer(DataContainerBase):
         self._idx_data = np.array(data, dtype=dtype)
         self._error_dicts = {}
         self._total_error = None
+        self._full_cor_split_system = None
 
     # -- private methods
 
     def _calculate_total_error(self):
+
         _sz = self.size
         _tmp_cov_mat = np.zeros((_sz, _sz))
+
         for _err_dict in self._error_dicts.values():
             if not _err_dict['enabled']:
                 continue
+
             _tmp_cov_mat += _err_dict['err'].cov_mat
 
-        _total_err = MatrixGaussianError(_tmp_cov_mat, 'cov', relative=False, reference=self.data)
-        self._total_error = _total_err
+        self._total_error = MatrixGaussianError(
+            _tmp_cov_mat, 'cov', relative=False, reference=self.data)
 
     def _clear_total_error_cache(self):
         self._total_error = None
+        self._full_cor_split_system = None
+
+    def _calculate_uncor_cov_mat(self):
+        """calculate uncorrelated part of the covariance matrix"""
+
+        _sz = self.size
+        _tmp_uncor_cov_mat = np.zeros((_sz, _sz))
+
+        for _err_dict in self._error_dicts.values():
+            # skip disabled errors
+            if not _err_dict['enabled']:
+                continue
+
+            # retrieve error object
+            _err = _err_dict["err"]
+
+            if isinstance(_err, MatrixGaussianError) or not _err_dict['splittable']:
+                # cannot decorrelate full matrix errors: count as uncorrelated
+                _tmp_uncor_cov_mat += _err.cov_mat
+            else:
+                # sum up uncorrelated parts
+                _tmp_uncor_cov_mat += _err.cov_mat_uncor
+
+        return np.array(_tmp_uncor_cov_mat)
+
+    def _calculate_cor_nuisance_des_mat(self):
+        """calculate the design matrix describing a linear map between
+        the nuisance parameters for the correlated uncertainties
+        and the model predictions"""
+
+        # retrieve all fully correlated errors
+        _cor_errors = self.get_matching_errors(
+            matching_criteria=dict(
+                enabled=True,
+                correlated=True,
+                splittable=True
+            )
+        )
+
+        _data_size = self.size
+        _err_size = len(_cor_errors)
+
+        _des_mat = np.zeros((_err_size, _data_size))
+        for _col, (_err_name, _err) in enumerate(six.iteritems(_cor_errors)):
+            _des_mat[_col, :] = _err.error_cor
+
+        return _des_mat
+
+    def _calculate_full_cor_split_system(self):
+        self._full_cor_split_system = (
+            self._calculate_cor_nuisance_des_mat(),
+            self._calculate_uncor_cov_mat()
+        )
 
     # -- public properties
 
@@ -103,7 +161,7 @@ class IndexedContainer(DataContainerBase):
     # -- public methods
 
     def add_simple_error(self, err_val,
-                         name=None, correlation=0, relative=False):
+                         name=None, correlation=0, relative=False, splittable=True):
         """
         Add a simple uncertainty source to the data container.
         Returns an error id which uniquely identifies the created error source.
@@ -117,6 +175,8 @@ class IndexedContainer(DataContainerBase):
         :type correlation: float
         :param relative: if ``True``, **err_val** will be interpreted as a *relative* uncertainty
         :type relative: bool
+        :param splittable: if ``False``, the error will be marked as not splittable (see `set_error_splittable`)
+        :type splittable: bool or ``None``
         :return: error name
         :rtype: str
         """
@@ -124,6 +184,7 @@ class IndexedContainer(DataContainerBase):
             err_val=err_val,
             name=name,
             correlation=correlation,
+            splittable=splittable,
             relative=relative,
             reference=self._idx_data  # set the reference appropriately
         )
