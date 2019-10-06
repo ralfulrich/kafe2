@@ -268,7 +268,26 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('reserved', _exc.exception.args[0])
         self.assertIn('data', _exc.exception.args[0])
 
-    def dummy_model_no_pars_raise(self):
+    def test_reserved_function_name_raise(self):
+        def func(a, b):
+            pass
+
+        for _name in ('data', 'model'):
+            func.__name__ = _name
+            with self.assertRaises(IndexedFitException) as _exc:
+                IndexedFit(data=self._ref_data,
+                           model_function=func)
+
+            self.assertIn('reserved', _exc.exception.args[0])
+            self.assertIn(_name, _exc.exception.args[0])
+
+    def test_model_lambda(self):
+        IndexedFit(
+            data=self._ref_data,
+            model_function=lambda a: a
+        )
+
+    def test_dummy_model_no_pars_raise(self):
         def dummy_model():
             pass
 
@@ -281,7 +300,7 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
             'needs at least one parameter',
             _exc.exception.args[0])
 
-    def dummy_model_varargs_raise(self):
+    def test_dummy_model_varargs_raise(self):
         # TODO: raise even without 'par'
         def dummy_model(x, par, *varargs):
             pass
@@ -294,7 +313,7 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('variable', _exc.exception.args[0])
         self.assertIn('varargs', _exc.exception.args[0])
 
-    def dummy_model_varkwargs_raise(self):
+    def test_dummy_model_varkwargs_raise(self):
         # TODO: raise even without 'par'
         def dummy_model(x, par, **varkwargs):
             pass
@@ -307,7 +326,7 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('variable', _exc.exception.args[0])
         self.assertIn('varkwargs', _exc.exception.args[0])
 
-    def dummy_model_varargs_varkwargs_raise(self):
+    def test_dummy_model_varargs_varkwargs_raise(self):
         # TODO: raise even without 'par'
         def dummy_model(x, par, *varargs, **varkwargs):
             pass

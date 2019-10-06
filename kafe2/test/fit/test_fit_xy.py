@@ -435,6 +435,23 @@ class TestXYFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('reserved', _exc.exception.args[0])
         self.assertIn('y_data', _exc.exception.args[0])
 
+    def test_reserved_function_name_raise(self):
+        def func(x, a, b):
+            pass
+
+        for _name in ('y_data', 'y_model'):
+            func.__name__ = _name
+            with self.assertRaises(XYFitException) as _exc:
+                XYFit(xy_data=self._ref_xy_data,
+                      model_function=func)
+
+            self.assertIn('reserved', _exc.exception.args[0])
+            self.assertIn(_name, _exc.exception.args[0])
+
+    def test_model_lambda(self):
+        XYFit(xy_data=self._ref_xy_data,
+              model_function=lambda x, a, b: x)
+
     def test_model_no_pars_raise(self):
         def dummy_model():
             pass

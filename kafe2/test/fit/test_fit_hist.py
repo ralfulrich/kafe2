@@ -262,6 +262,25 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('reserved', _exc.exception.args[0])
         self.assertIn('data', _exc.exception.args[0])
 
+    def test_reserved_function_name_raise(self):
+        def func(x, a, b):
+            pass
+
+        for _name in ('data', 'model'):
+            func.__name__ = _name
+            with self.assertRaises(HistFitException) as _exc:
+                HistFit(data=self._ref_hist_cont, model_density_function=func)
+
+            self.assertIn('reserved', _exc.exception.args[0])
+            self.assertIn(_name, _exc.exception.args[0])
+
+    def test_model_density_lambda(self):
+        # should be able to use lambda expressions as functions
+        HistFit(
+            data=self._ref_hist_cont,
+            model_density_function=lambda x, a, b: x
+        )
+
     def test_model_no_pars_raise(self):
         def dummy_model():
             pass

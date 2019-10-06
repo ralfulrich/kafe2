@@ -2,6 +2,7 @@ import abc
 import inspect
 import numpy as np
 import six
+import uuid
 
 from .format import ModelParameterFormatter, ModelFunctionFormatter
 from ..io.file import FileIOMixin
@@ -121,6 +122,12 @@ class ModelFunctionBase(FileIOMixin, object):
             raise ModelFunctionException("Cannot use {} as model function: "
                                          "object not callable!".format(model_function))
 
+        self._name = self._model_function_handle.__name__
+
+        # make lambda names valid Python identifiers
+        if self._name == '<lambda>':
+            self._name = 'lambda' + uuid.uuid4().hex[:10]
+
         self._assign_model_function_signature_and_argcount()
         self._validate_model_function_raise()
         self._assign_function_formatter()
@@ -179,7 +186,7 @@ class ModelFunctionBase(FileIOMixin, object):
     @property
     def name(self):
         """The model function name (a valid Python identifier)"""
-        return self._model_function_handle.__name__
+        return self._name
 
     @property
     def func(self):
