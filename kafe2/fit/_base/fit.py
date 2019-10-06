@@ -57,6 +57,22 @@ class FitBase(FileIOMixin, object):
 
     # -- private methods
 
+    def _print_nexus_graphviz_source(self):
+        '''for debugging'''
+        from kafe2.core.fitters.nexus import NodeSubgraphGraphvizSourceProducer
+        NodeSubgraphGraphvizSourceProducer(
+            self._nexus.get('__root__'),
+            exclude={self._nexus.get('__root__')}
+        ).run()
+
+    def _view_nexus_graphviz(self):
+        '''for debugging'''
+        from kafe2.core.fitters.nexus import NodeSubgraphGraphvizViewer
+        NodeSubgraphGraphvizViewer(
+            self._nexus.get('__root__'),
+            exclude={self._nexus.get('__root__')}
+        ).run()
+
     def _add_property_to_nexus(self, prop, nexus=None, name=None, depends_on=None):
         '''register a property of this object in the nexus as a function node'''
 
