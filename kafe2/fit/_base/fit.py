@@ -89,6 +89,11 @@ class FitBase(FileIOMixin, object):
             raise self.__class__.EXCEPTION_TYPE(
                 "The following names are reserved and cannot be used as model function arguments: %r"
                 % (_invalid_args,))
+        # disallow using reserved keywords as the model function name
+        if self._model_function.name in self.RESERVED_NODE_NAMES:
+            raise self.__class__.EXCEPTION_TYPE(
+                "The following name is reserved and cannot be used as a model function name: %r"
+                % (self._model_function.name,))
 
     def _initialize_fitter(self, minimizer=None, minimizer_kwargs=None):
         # save minimizer, minimizer_kwargs for serialization
