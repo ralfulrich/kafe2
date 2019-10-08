@@ -44,6 +44,8 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
     MINIMIZER = 'scipy'
 
+    FIT_CLASS = IndexedFit
+
     def setUp(self):
         self._n_points = 10
 
@@ -103,23 +105,17 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
             cost_function_value=self._ref_initial_cost,
 
             data_cov_mat=self._ref_matrix_eye,
-            #data_uncor_cov_mat=self._ref_matrix_eye,
             data_cov_mat_inverse=self._ref_matrix_eye,
-            #data_uncor_cov_mat_inverse=self._ref_matrix_eye,
             data_cor_mat=self._ref_matrix_eye,
             data_error=self._ref_error,
 
             model_cov_mat=self._ref_matrix_eye * 0,
-            #model_uncor_cov_mat=self._ref_matrix_eye * 0,  # TODO: fix
             model_cov_mat_inverse=None,
-            #model_uncor_cov_mat_inverse=None,  # TODO: fix
             #model_cor_mat=self._ref_matrix_eye,
             model_error=self._ref_error * 0,
 
             total_cov_mat=self._ref_matrix_eye,
-            #total_uncor_cov_mat=self._ref_matrix_eye,
             total_cov_mat_inverse=self._ref_matrix_eye,
-            #total_uncor_cov_mat_inverse=self._ref_matrix_eye,
             #total_cor_mat=self._ref_matrix_eye,  # TODO: add
             total_error=self._ref_error,
         )
@@ -245,7 +241,6 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
             dict(
                 data=self._ref_data * 2,
                 parameter_values=_new_estimates,
-                poi_values=_new_estimates,
             ),
             rtol=1e-2
         )
@@ -341,25 +336,12 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         # TODO: enable when implemented
         #self.assertIn('varkwargs', _exc.exception.args[0])
 
-    def test_report_before_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit()
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")
-
-    def test_report_after_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit()
-        _fit.do_fit()
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")
-
 
 class TestIndexedFitWithSimpleErrors(AbstractTestFit, unittest.TestCase):
 
     MINIMIZER = 'scipy'
+
+    FIT_CLASS = IndexedFit
 
     def setUp(self):
         six.get_unbound_function(TestIndexedFitBasicInterface.setUp)(self)
@@ -474,6 +456,8 @@ class TestIndexedFitWithSimpleErrors(AbstractTestFit, unittest.TestCase):
 class TestIndexedFitWithMatrixErrors(AbstractTestFit, unittest.TestCase):
 
     MINIMIZER = 'scipy'
+
+    FIT_CLASS = IndexedFit
 
     def setUp(self):
         six.get_unbound_function(TestIndexedFitBasicInterface.setUp)(self)

@@ -34,6 +34,8 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
     MINIMIZER = 'scipy'
 
+    FIT_CLASS = HistFit
+
     def setUp(self):
         self._ref_n_bins = 11
         self._ref_n_bin_range = (-3, 25)
@@ -114,7 +116,7 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
         )
 
-    def _get_fit(self, model_density_function=None, model_density_antiderivative=None, cost_function=None):
+    def _get_fit(self, model_density_function=None, model_density_antiderivative=hist_model_density_antideriv, cost_function=None):
         '''convenience'''
 
         model_density_function = model_density_function or hist_model_density
@@ -136,13 +138,13 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
     def _get_test_fits(self):
         return {
-            # numeric integration takes too long for testing
-            #'default': \
-            #    self._get_fit(),
+            'default': \
+                self._get_fit(),
             'explicit_chi2': \
                 self._get_fit(cost_function=simple_chi2, model_density_antiderivative=hist_model_density_antideriv),
-            'model_with_antiderivative': \
-                self._get_fit(model_density_antiderivative=hist_model_density_antideriv),
+            # numeric integration takes too long for testing
+            #'model_without_antiderivative': \
+            #    self._get_fit(model_density_antiderivative=None),
         }
 
     def test_initial_state(self):
@@ -381,18 +383,3 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
                 model_density_function=legendre_grade_2,
                 model_density_antiderivative=legendre_grade_2_integrated,
                 minimizer=self.MINIMIZER)
-
-    def test_report_before_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit(model_density_antiderivative=hist_model_density_antideriv)
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")
-
-    def test_report_after_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit(model_density_antiderivative=hist_model_density_antideriv)
-        _fit.do_fit()
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")

@@ -8,6 +8,8 @@ class AbstractTestFit(object):
 
     MINIMIZER = None
 
+    FIT_CLASS = None
+
     @abc.abstractmethod
     def setUp(self):
         pass
@@ -84,3 +86,40 @@ class AbstractTestFit(object):
                     ref_prop_dict,
                     **kwargs
                 )
+
+    # -- test cases to be run for *all* fit types
+
+    def test_report_before_fit(self):
+        # TODO: check report content
+        _buffer = six.StringIO()
+        _fit = self._get_fit()
+        _fit.report(output_stream=_buffer)
+        self.assertNotEqual(_buffer.getvalue(), "")
+
+    def test_report_after_fit(self):
+        # TODO: check report content
+        _buffer = six.StringIO()
+        _fit = self._get_fit()
+        _fit.do_fit()
+        _fit.report(output_stream=_buffer)
+        self.assertNotEqual(_buffer.getvalue(), "")
+
+    def test_dynamic_properties(self):
+        _fit = self._get_fit()
+        _ref_props = {}
+        _failed_props = {}
+        for _p in _fit.__dynamic_props__:
+            try:
+                _ref_props[_p] = _fit._nexus.get(_p).value
+            except np.linalg.LinAlgError as _exc:
+                # expect properties to be none if nexus throws LinAlgError
+                _ref_props[_p] = None
+            except Exception as _exc:
+                _failed_props[_p] = _exc
+
+        # fail prematurely if there are failed properties
+        for _fp_name, _fp_exc in _failed_props.items():
+            with self.subTest(failed_prop=_fp_name):
+                raise _fp_exc
+
+        self._assert_fit_properties(_fit, _ref_props)

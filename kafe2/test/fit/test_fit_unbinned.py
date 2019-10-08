@@ -31,6 +31,8 @@ class TestUnbinnedFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
     MINIMIZER = 'scipy'
 
+    FIT_CLASS = UnbinnedFit
+
     def setUp(self):
 
         self._ref_data = np.array([
@@ -257,18 +259,3 @@ class TestUnbinnedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         self.assertIn('varargs', _exc.exception.args[0])
         # TODO: enable when implemented
         #self.assertIn('varkwargs', _exc.exception.args[0])
-
-    def test_report_before_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit()
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")
-
-    def test_report_after_fit(self):
-        # TODO: check report content
-        _buffer = six.StringIO()
-        _fit = self._get_fit()
-        _fit.do_fit()
-        _fit.report(output_stream=_buffer)
-        self.assertNotEqual(_buffer.getvalue(), "")
