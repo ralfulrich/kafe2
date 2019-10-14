@@ -68,6 +68,25 @@ class XYMultiFit(FitBase):
         :param minimizer_kwargs: kwargs provided to the minimizer constructor
         :type minimizer_kwargs: native Python dictionary
         """
+        FitBase.__init__(self)
+
+        # set the labels
+        self.labels = [None, None]
+
+        # constructing the model function needs the data container
+        self._set_new_data(xy_data)
+
+        # set/construct the model function object
+        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
+            self._model_function = model_function
+            self._model_function.data_indices = self._data_container.data_indices
+        else:
+            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function,
+                                        self._data_container.data_indices)
+
+        # validate the model function for this fit
+        self._validate_model_function_for_fit_raise()
+
         # set the cost function, validation is done when setting the data
         if isinstance(cost_function, CostFunctionBase):
             self._cost_function = cost_function
@@ -93,36 +112,23 @@ class XYMultiFit(FitBase):
         else:
             self._x_error_algorithm = x_error_algorithm
 
-        self._minimizer = minimizer
-        self._minimizer_kwargs = minimizer_kwargs
+        self._fit_param_constraints = []
+        self._loaded_result_dict = None
 
-        # constructing the model function needs the data container
-        self._set_new_data(xy_data)
+        # retrieve fit parameter information
+        self._init_fit_parameters()
 
-        # set/construct the model function object
-        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
-            self._model_function = model_function
-            self._model_function.data_indices = self._data_container.data_indices
-        else:
-            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function,
-                                        self._data_container.data_indices)
-
-        # validate the model function for this fit
-        self._validate_model_function_for_fit_raise()
-
-        # initialize the Nexus
-        self._init_nexus()
-
-        # initialize the Fitter
-        self._initialize_fitter(minimizer, minimizer_kwargs)
         # create the child ParametricModel object
         self._set_new_parametric_model()
         # TODO: check where to update this (set/release/etc.)
         # FIXME: nicer way than len()?
         self._cost_function.ndf = self._data_container.size - len(self._param_model.parameters)
 
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
+        # initialize the Nexus
+        self._init_nexus()
+
+        # initialize the Fitter
+        self._initialize_fitter(minimizer, minimizer_kwargs)
 
     # -- private methods
 
@@ -175,9 +181,9 @@ class XYMultiFit(FitBase):
             self._data_container = self._new_data_container(new_data, dtype=float)
         # TODO: Think of a better way when setting new data to not always delete all labels
         self._axis_labels = [[None, None] for _ in range(self._data_container.num_datasets)]
+
         # mark nexus nodes for update
-        # hasattr is needed, because data needs to be set before the nexus can be initialized
-        if hasattr(self, '_nexus'):
+        if self._nexus:
             self._nexus.get('x_data').mark_for_update()
             self._nexus.get('y_data').mark_for_update()
 

@@ -9,10 +9,14 @@ from functools import partial
 
 from kafe2.core.constraint import GaussianMatrixParameterConstraint, GaussianSimpleParameterConstraint
 from ...tools import print_dict_as_table
-from ...core import NexusFitter
+
+from ...core import NexusFitter, Nexus
+from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
+
 from ...config import kc
 from .container import DataContainerException
 from ..io.file import FileIOMixin
+from ..util import function_library, add_in_quadrature, collect, invert_matrix, string_join_if, zip_longest_dict
 
 __all__ = ["FitBase", "FitException"]
 
@@ -34,11 +38,16 @@ class FitBase(FileIOMixin, object):
     EXCEPTION_TYPE = FitException
     RESERVED_NODE_NAMES = None
 
+    # nexus nodes '<axis>_data' etc. are added for these
+    AXES = None
+
     def __init__(self):
         self._data_container = None
         self._param_model = None
         self._nexus = None
         self._fitter = None
+        self._poi_value_dict = None
+        self._poi_names = None
         self._fit_param_names = None
         self._fit_param_constraints = None
         self._model_function = None
@@ -48,13 +57,183 @@ class FitBase(FileIOMixin, object):
 
     # -- private methods
 
-    def _add_property_to_nexus(self, prop, obj=None, name=None):
+    def _add_property_to_nexus(self, prop, nexus=None, name=None, depends_on=None):
         '''register a property of this object in the nexus as a function node'''
-        obj = obj if obj is not None else self
-        return self._nexus.add_function(
-            partial(getattr(obj.__class__, prop).fget, obj),
-            func_name=name or prop
+
+        nexus = nexus if nexus is not None else self._nexus
+        name = name if name is not None else prop
+
+        _node = nexus.add_function(
+            partial(getattr(self.__class__, prop).fget, self),
+            func_name=name,
+            par_names=tuple(),  # properties have no arguments
+            existing_behavior='replace_if_empty'
         )
+
+        # register explicit dependencies
+        if depends_on is not None:
+            nexus.add_dependency(name, depends_on=depends_on)
+
+        return _node
+
+    def _init_fit_parameters(self):
+
+        # get names and default values of all model parameters
+        self._poi_value_dict = self._get_default_values(
+            model_function=self._model_function,
+            x_name=getattr(self._model_function, 'x_name', None)
+        )
+
+        self._fit_param_names = list(self._poi_value_dict)
+        self._poi_names = tuple(self._poi_value_dict)
+
+    def _init_nexus(self, nexus=None):
+        '''initialize a nexus or update an existing nexus'''
+        # create and attach a nexus if none exists
+        if nexus is None:
+            nexus = self._nexus = Nexus()
+
+        # pseudo-node for declaring dependencies on an external state
+        nexus.add(Empty(name='_external'))
+
+        # -- data and model-related nodes
+
+        _added = {}
+        for _axis in (self.AXES or (None,)):
+            for _type in ('data', 'model'):
+                for _prop in (None, 'error', 'cov_mat', 'cor_mat'):
+
+                    _full_prop = string_join_if((_axis, _type, _prop))
+
+                    try:
+                        _node = self._add_property_to_nexus(
+                            _full_prop,
+                            nexus=nexus,
+                            depends_on='_external'
+                        )
+                    except AttributeError:
+                        # property not supported by object
+                        continue
+                    else:
+                        _added[_full_prop] = _node
+
+                    if _prop == 'cov_mat':
+                        # add inverse cov mat node to nexus
+                        nexus.add_function(
+                            invert_matrix,
+                            _full_prop + '_inverse',
+                            par_names=(_full_prop,)
+                        )
+
+            # aggregate (i.e. 'total') properties
+            for _prop in ('error', 'cov_mat'):
+
+                # determine correct aggregation function
+                if _prop == 'error':
+                    _func = add_in_quadrature
+                else:
+                    _func = np.ndarray.__add__
+
+                try:
+                    _component_names = [
+                        _added[string_join_if((_axis, _type, _prop))].name
+                        for _type in ('data', 'model')
+                    ]
+                except KeyError:
+                    # at least one component was not added before
+                    pass
+                else:
+                    _full_prop = string_join_if((_axis, 'total', _prop))
+
+                    nexus.add_function(
+                        _func,
+                        func_name=_full_prop,
+                        par_names=_component_names
+                    )
+
+                # add inverse
+                if _prop != 'error':
+                    nexus.add_function(
+                        invert_matrix,
+                        func_name=_full_prop + '_inverse',
+                        par_names=(_full_prop,),
+                        existing_behavior='ignore'
+                    )
+
+
+        # -- concatenation of data and model across all axes
+
+        if self.AXES is not None:
+            for _type in ('data', 'model'):
+                for _prop in (None, 'error', 'cov_mat', 'cor_mat'):
+                    nexus.add_function(
+                        lambda *args: np.array(args),
+                        func_name=string_join_if((_type, _prop)),
+                        par_names=[
+                            string_join_if((_axis, _type, _prop))
+                            for _axis in self.AXES
+                        ]
+                    )
+
+        # -- parameters of interest (a.k.a model parameters, POIs)
+
+        for _pn, _pv in six.iteritems(self._poi_value_dict):
+            self._nexus.add(Parameter(_pv, name=_pn))
+
+        self._add_property_to_nexus(
+            'poi_values', nexus=nexus, depends_on=self._poi_names)
+        self._add_property_to_nexus(
+            'parameter_values', nexus=nexus, depends_on='poi_values')
+        self._add_property_to_nexus(
+            'parameter_constraints', nexus=nexus)
+
+        # update parametric model when POIs change
+        nexus.get('poi_values').register_callback(
+            lambda: self.MODEL_TYPE.parameters.fset(
+                self._param_model,
+                self.poi_values
+            )
+        )
+
+        # 'model' depends on both model and nuisance parameters
+        nexus.add_dependency(
+            'model',
+            depends_on=(
+                'parameter_values'
+            )
+        )
+
+        # add the original function name as an alias for 'model'
+        nexus.add_alias(
+            self._model_function.name,
+            alias_for='model',
+            existing_behavior='ignore'  # allow 'model' as function name for model
+        )
+
+        # -- nuisance parameters
+
+        # TODO: implement nuisance parameters
+
+        #nexus.add_function(
+        #    collect,
+        #    func_name="nuisance_vector"
+        #)
+
+        # -- cost function
+
+        # the cost function (the function to be minimized)
+        _cost_node = nexus.add_function(
+            self._cost_function.func,
+            func_name='cost',
+        )
+
+        # add the cost function name as an alias for 'cost'
+        try:
+            nexus.add_alias(self._cost_function.name, alias_for='cost')
+        except NexusError:
+            pass  # allow 'cost' as function name for cost function
+
+        return nexus
 
     @classmethod
     def _get_base_class(cls):
@@ -167,11 +346,14 @@ class FitBase(FileIOMixin, object):
         :param new_data: Array or Data-Container with the new data
         """
         self._set_new_data(new_data)
+
         # validate cost function
         _data_and_cost_compatible, _reason = self._cost_function.is_data_compatible(self.data)
         if not _data_and_cost_compatible:
             raise self.EXCEPTION_TYPE('Fit data and cost function are not compatible: %s' % _reason)
+
         self._set_new_parametric_model()
+
         # TODO: check where to update this (set/release/etc.)
         # FIXME: nicer way than len()?
         self._cost_function.ndf = self._data_container.size - len(self._param_model.parameters)
@@ -180,41 +362,18 @@ class FitBase(FileIOMixin, object):
     @abc.abstractmethod
     def model(self): pass
 
-    # @abc.abstractproperty
-    # def data_error(self): pass
-
-    # @abc.abstractproperty
-    # def data_cov_mat(self): pass
-    #
-    # @abc.abstractproperty
-    # def data_cov_mat_inverse(self): pass
-    #
-    # @abc.abstractproperty
-    # def model_error(self): pass
-    #
-    # @abc.abstractproperty
-    # def model_cov_mat(self): pass
-    #
-    # @abc.abstractproperty
-    # def model_cov_mat_inverse(self): pass
-    #
-    # @abc.abstractproperty
-    # def total_error(self): pass
-    #
-    # @abc.abstractproperty
-    # def total_cov_mat(self): pass
-    #
-    # @abc.abstractproperty
-    # def total_cov_mat_inverse(self): pass
-
     @property
     def parameter_values(self):
         """the current parameter values"""
+        if not self._fitter:
+            return self.poi_values
         return tuple((self._fitter.fit_parameter_values[_pn] for _pn in self._fitter.parameters_to_fit))
 
     @property
     def parameter_names(self):
         """the current parameter names"""
+        if not self._fitter:
+            return self.poi_names
         return self._fitter.parameters_to_fit
 
     @property
@@ -252,7 +411,7 @@ class FitBase(FileIOMixin, object):
     @property
     def parameter_name_value_dict(self):
         """a dictionary mapping each parameter name to its current value"""
-        return self._fitter.fit_parameter_values
+        return self._fitter.fit_parameter_values if self._fitter else self._poi_value_dict
 
     @property
     def parameter_constraints(self):
@@ -292,12 +451,12 @@ class FitBase(FileIOMixin, object):
     @property
     def poi_values(self):
         """the values of the parameters of interest, equal to ``self.parameter_values`` minus nuisance parameters"""
-        return self.parameter_values
+        return tuple((self.parameter_name_value_dict[_pn] for _pn in self.poi_names))
 
     @property
     def poi_names(self):
         """the names of the parameters of interest, equal to ``self.parameter_names`` minus nuisance parameter names"""
-        return self.parameter_names
+        return self._poi_names
 
     @property
     def did_fit(self):

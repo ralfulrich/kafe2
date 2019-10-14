@@ -8,7 +8,7 @@ import textwrap
 
 from ...tools import print_dict_as_table
 from ...core import NexusFitter, Nexus
-from ...core.fitters.nexus import Parameter, Alias, NexusError
+from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
 from ...config import kc
 from .._base import FitException, FitBase, DataContainerBase, CostFunctionBase
 from .container import XYContainer
@@ -43,6 +43,8 @@ class XYFit(FitBase):
 
     X_ERROR_ALGORITHMS = ('iterative linear', 'nonlinear')
 
+    AXES = ('x', 'y')
+
     def __init__(self,
                  xy_data,
                  model_function=function_library.linear_model,
@@ -62,6 +64,8 @@ class XYFit(FitBase):
         :param x_error_algorithm: algorithm for handling x errors. Can be one of: ``'iterative linear'``, ``'nonlinear'``
         :type x_error_algorithm: str
         """
+        FitBase.__init__(self)
+
         # set the labels
         self.labels = [None, None]
 
@@ -99,197 +103,44 @@ class XYFit(FitBase):
         else:
             self._x_error_algorithm = x_error_algorithm
 
+        self._fit_param_constraints = []
+        self._loaded_result_dict = None
+
+        # retrieve fit parameter information
+        self._init_fit_parameters()
+
+        # set the data after the cost_function has been set and nexus has been initialized
+        self.data = xy_data
+
         # initialize the Nexus
         self._init_nexus()
 
         # initialize the Fitter
         self._initialize_fitter(minimizer, minimizer_kwargs)
 
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
-
-        # set the data after the cost_function has been set and nexus has been initialized
-        self.data = xy_data
-
 
     # -- private methods
 
-    def _init_nexus(self):
-        self._nexus = Nexus()
+    def _init_nexus(self, nexus=None):
 
-        for _axis in ('x', 'y'):
-            for _type in ('data', 'model'):
+        nexus = FitBase._init_nexus(self, nexus)
 
-                # add data and model for axis
-                self._add_property_to_nexus('_'.join((_axis, _type)))
-                # add errors for axis
-                self._add_property_to_nexus('_'.join((_axis, _type, 'error')))
+        # -- "projected" (i.e. "x" + "y") error-related nodes
 
-                # add cov mats for axis
-                for _prop in ('cov_mat', 'uncor_cov_mat'):
-                    _node = self._add_property_to_nexus('_'.join((_axis, _type, _prop)))
-                    # add inverse
-                    self._nexus.add_function(
-                        invert_matrix,
-                        func_name='_'.join((_node.name, 'inverse')),
-                        par_names=(_node.name,)
-                    )
-
-            # 'total_error', i.e. data + model error in quadrature
-            self._nexus.add_function(
-                add_in_quadrature,
-                func_name='_'.join((_axis, 'total', 'error')),
-                par_names=(
-                    '_'.join((_axis, 'data', 'error')),
-                    '_'.join((_axis, 'model', 'error'))
-                )
-            )
-
-            # 'total_cov_mat', i.e. data + model cov mats
-            for _mat in ('cov_mat', 'uncor_cov_mat'):
-                _node = (
-                    self._nexus.get('_'.join((_axis, 'data', _mat))) +
-                    self._nexus.get('_'.join((_axis, 'model', _mat)))
-                )
-                _node.name = '_'.join((_axis, 'total', _mat))
-                self._nexus.add(_node)
-
-                # add inverse
-                self._nexus.add_function(
-                    invert_matrix,
-                    func_name='_'.join((_node.name, 'inverse')),
-                    par_names=(_node.name,),
-                )
-
-        # nuisance parameter-related properties
         self._add_property_to_nexus(
-            '_y_data_nuisance_cor_design_mat',
-            #obj=self._data_container,
-            #name='_y_data_nuisance_cor_design_mat'
-        )
+            'projected_xy_total_error', depends_on='y_model')
+
         self._add_property_to_nexus(
-            '_y_model_nuisance_cor_design_mat',
-            #obj=self._param_model,
-            #name='_y_model_nuisance_cor_design_mat'
-        )
+            'projected_xy_total_cov_mat', nexus=nexus)
 
-        self._nexus.add_alias(
-            '_y_total_nuisance_cor_design_mat',
-            alias_for='_y_data_nuisance_cor_design_mat'
-        )
-
-        _node = self._add_property_to_nexus('projected_xy_total_error')
-        _node.add_parent(self._nexus.get('y_model'))
-        _node = self._add_property_to_nexus('projected_xy_total_cov_mat')
-        self._nexus.add_function(
+        nexus.add_function(
             invert_matrix,
-            func_name='_'.join((_node.name, 'inverse')),
-            par_names=(_node.name,),
+            func_name='projected_xy_total_cov_mat_inverse',
+            par_names=('projected_xy_total_cov_mat',),
+            existing_behavior='replace_if_empty'
         )
 
-        # get names and default values of all parameters
-        _nexus_new_dict = self._get_default_values(
-            model_function=self._model_function,
-            x_name=self._model_function.x_name
-        )
-
-        # -- fit parameters
-
-        self._fit_param_names = []  # names of all fit parameters (including nuisance parameters)
-        self._poi_names = []  # names of the parameters of interest (i.e. the model parameters)
-        for _par_name, _par_value in six.iteritems(_nexus_new_dict):
-            # create nexus node for function parameter
-            self._nexus.add(Parameter(_par_value, name=_par_name))
-
-            self._fit_param_names.append(_par_name)
-            self._poi_names.append(_par_name)
-
-        self._poi_names = tuple(self._poi_names)
-
-        # -- nuisance parameters
-        self._y_nuisance_names = []  # names of all nuisance parameters accounting for correlated y errors
-        self._x_uncor_nuisance_names = []  # names of all nuisance parameters accounting for uncorrelated x errors
-        # TODO
-        # self._x_cor_nuisance_names = []  # names of all nuisance parameters accounting for correlated x errors
-
-        self._nexus.add_function(lambda: self.poi_values, func_name='poi_values')
-        self._nexus.add_function(lambda: self.parameter_values, func_name='parameter_values')
-        self._nexus.add_function(lambda: self.parameter_constraints, func_name='parameter_constraints')
-
-        # add the original function name as an alias to 'y_model'
-        try:
-            self._nexus.add_alias(self._model_function.name, alias_for='y_model')
-        except NexusError:
-            pass  # allow 'y_model' as function name for model function
-
-        self._nexus.add_function(
-            collect,
-            func_name="y_nuisance_vector"
-        )
-        self._nexus.add_function(
-            collect,
-            func_name="x_uncor_nuisance_vector"
-        )
-
-        # -- initialize nuisance parameters
-
-        # TODO: reimplement nuisance parameters
-
-        ### # one nuisance parameter per correlated 'y' error
-        ### if self._cost_function.get_flag("need_y_nuisance") and self._data_container.has_y_errors:
-        ###     # retrieve the errors for which to assign 'y'-nuisance parameters
-        ###     _nuisance_error_objects = self.get_matching_errors(
-        ###         matching_criteria=dict(
-        ###             axis=1,  # cannot use 'y' here
-        ###             correlated=True
-        ###         )
-        ###     )
-        ###     for _err_name, _err_obj in six.iteritems(_nuisance_error_objects):
-        ###         _nuisance_name = "_n_yc_{}".format(_err_name)
-        ###         self._nexus.new(**{_nuisance_name: 0.0})
-        ###         self._nexus.add_dependency(_nuisance_name, "y_nuisance_vector")
-        ###         self._fit_param_names.append(_nuisance_name)
-        ###         self._y_nuisance_names.append(_nuisance_name)
-        ###     self._nexus.set_function_parameter_names("y_nuisance_vector", self._y_nuisance_names)
-        ###
-        ### # one 'x' nuisance parameter per data point (TODO: and one per correlated 'x' error)
-        ### if self._cost_function.get_flag("need_x_nuisance") and self._data_container.has_uncor_x_errors:
-        ###     # one 'x' nuisance parameter per data point
-        ###     for i in six.moves.range(self._data_container.size):
-        ###         _nuisance_name = "_n_xu_{}".format(i)
-        ###         self._nexus.new(**{_nuisance_name: 0.0})
-        ###         self._nexus.add_dependency(_nuisance_name, "x_uncor_nuisance_vector")
-        ###         self._fit_param_names.append(_nuisance_name)
-        ###         self._x_uncor_nuisance_names.append(_nuisance_name)
-        ###     self._nexus.set_function_parameter_names("x_uncor_nuisance_vector", self._x_uncor_nuisance_names)
-        ###     # TODO
-        ###     # # retrieve the errors for which to assign 'x'-nuisance parameters
-        ###     # _nuisance_error_objects = self.get_matching_errors(
-        ###     #     matching_criteria=dict(
-        ###     #         axis=0,  # cannot use 'x' here
-        ###     #         correlated=True
-        ###     #     )
-        ###     # )
-        ###     # for _err_name, _err_obj in six.iteritems(_nuisance_error_objects):
-        ###     #     _nuisance_name = "_n_xc_{}".format(_err_name)
-        ###     #     self._nexus.new(**{_nuisance_name: 0.0})
-        ###     #     self._nexus.add_dependency(_nuisance_name, "x_cor_nuisance_vector")
-        ###     #     self._fit_param_names.append(_nuisance_name)
-        ###     #     self._x_cor_nuisance_names.append(_nuisance_name)
-        ###     # self._nexus.set_function_parameter_names("x_cor_nuisance_vector", self._x_cor_nuisance_names)
-
-        # the cost function (the function to be minimized)
-        _cost_node = self._nexus.add_function(
-            self._cost_function.func,
-            func_name=self._cost_function.name,
-        )
-
-        _cost_alias = self._nexus.add_alias('cost', alias_for=self._cost_function.name)
-
-        self._nexus.add_dependency('poi_values', depends_on=self._poi_names)
-        self._nexus.add_dependency('parameter_values', depends_on=self._fit_param_names)
-
-        self._nexus.add_dependency(
+        nexus.add_dependency(
             'projected_xy_total_cov_mat',
             depends_on=(
                 'poi_values',
@@ -298,7 +149,7 @@ class XYFit(FitBase):
                 'y_total_cov_mat'
             )
         )
-        self._nexus.add_dependency(
+        nexus.add_dependency(
             'projected_xy_total_error',
             depends_on=(
                 'poi_values',
@@ -308,7 +159,8 @@ class XYFit(FitBase):
             )
         )
 
-        self._nexus.add_dependency(
+        # -- additional dependencies
+        nexus.add_dependency(
             'y_model',
             depends_on=(
                 'x_model',
@@ -316,34 +168,41 @@ class XYFit(FitBase):
             )
         )
 
-        self._nexus.add_dependency(
+        nexus.add_dependency(
             'x_model',
             depends_on=(
                 'x_data',
             )
         )
 
-        for _axis in ('x', 'y'):
-            self._nexus.add_dependency(
-                '{}_total_error'.format(_axis),
-                depends_on=(
-                    '{}_data_error'.format(_axis),
-                    '{}_model_error'.format(_axis),
-                )
+        # add the original function name as an alias for 'y_model'
+        _func_node = nexus.get(self._model_function.name)
+        if _func_node is None:
+            nexus.add_alias(
+                self._model_function.name,
+                alias_for='y_model'
             )
-            for _side in ('data', 'model', 'total'):
-                self._nexus.add_dependency(
-                    '{}_{}_uncor_cov_mat'.format(_axis, _side),
-                    depends_on='{}_{}_cov_mat'.format(_axis, _side)
-                )
+        elif isinstance(_func_node, Alias):
+            # remap the alias to point to 'y_model'
+            _func_node.set_children([
+                nexus.get('y_model')
+            ])
+        elif _func_node.name == 'y_model':
+            # function node exists and is called 'y_model'
+            pass
+        else:
+            # should be prevented by correct validation
+            raise AssertionError(
+                "Uncaught attempt to use reserved node "
+                "name '{}'!".format(_func_node.name))
 
         # in case 'x' errors are defined and the corresponding
         # algorithm is 'iterative linear', matrices should be projected
         # once and the corresponding node made frozen
-        if (self._x_error_algorithm == 'iterative linear' and
-            not self.has_x_errors):
+        if self._x_error_algorithm == 'iterative linear':
+            self._with_projected_nodes('freeze')
 
-            self._with_projected_nodes(('update', 'freeze'))
+        return nexus
 
     def _with_projected_nodes(self, actions):
         '''perform actions on projected error nodes: freeze, update, unfreeze...'''
@@ -390,9 +249,9 @@ class XYFit(FitBase):
             _x_data = new_data[0]
             _y_data = new_data[1]
             self._data_container = self._new_data_container(_x_data, _y_data, dtype=float)
-        # update nexus data nodes
-        self._nexus.get('x_data').mark_for_update()
-        self._nexus.get('y_data').mark_for_update()
+
+        if self._nexus:
+            self._nexus.get('_external').mark_for_update()
 
     def _set_new_parametric_model(self):
         self._param_model = self._new_parametric_model(
@@ -400,6 +259,9 @@ class XYFit(FitBase):
             self._model_function,
             self.poi_values
         )
+
+        if self._nexus:
+            self._nexus.get('_external').mark_for_update()
 
     # -- public properties
 
@@ -822,18 +684,6 @@ class XYFit(FitBase):
         return self._data_container.y_range
 
     @property
-    def poi_values(self):
-        # gives the values of the model_function_parameters
-        _poi_values = []
-        for _name in self.poi_names:
-            _poi_values.append(self.parameter_name_value_dict[_name])
-        return tuple(_poi_values)
-
-    @property
-    def poi_names(self):
-        return self._poi_names
-
-    @property
     def x_uncor_nuisance_values(self):
         """gives the x uncorrelated nuisance vector"""
         _values = []
@@ -976,14 +826,9 @@ class XYFit(FitBase):
         # explicitly update error projection nodes
         self._with_projected_nodes('update')
 
-        # unfreeze error projection nodes only if fit has x errors
-        if self.has_x_errors:
-            self._with_projected_nodes('unfreeze')
-
         # clear loaded results and update parameter formatters
         self._loaded_result_dict = None
         self._update_parameter_formatters()
-
 
     def eval_model_function(self, x=None, model_parameters=None):
         """
