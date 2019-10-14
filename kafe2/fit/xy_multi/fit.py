@@ -26,7 +26,7 @@ class XYMultiFitException(FitException):
     pass
 
 
-class XYMultiFit(FitBase):
+class XYMultiFit(XYFit):
     CONTAINER_TYPE = XYMultiContainer
     MODEL_TYPE = XYMultiParametricModel
     MODEL_FUNCTION_TYPE = XYMultiModelFunction
@@ -133,7 +133,7 @@ class XYMultiFit(FitBase):
     # -- private methods
 
     def _init_nexus(self):
-        six.get_unbound_function(XYFit._init_nexus)(self)  # same nexus wiring as for simple XYFit
+        super(XYMultiFit, self)._init_nexus()  # same nexus wiring as for simple XYFit
 
     def _calculate_y_error_band(self, num_points=100):
         # TODO: config for num_points
@@ -224,7 +224,7 @@ class XYMultiFit(FitBase):
         """array of measurement data *y* values"""
         return self._data_container.y
 
-    @FitBase.data.getter
+    @XYFit.data.getter
     def data(self):
         """(2, N)-array containing *x* and *y* measurement values"""
         return self._data_container.data
@@ -581,14 +581,6 @@ class XYMultiFit(FitBase):
         return self._data_container.y_range
 
     @property
-    def poi_values(self):
-        # gives the values of the model_function_parameters
-        _poi_values = []
-        for _name in self._poi_names:
-            _poi_values.append(self.parameter_name_value_dict[_name])
-        return tuple(_poi_values)
-
-    @property
     def x_uncor_nuisance_values(self):
         """gives the x uncorrelated nuisance vector"""
         _values = []
@@ -624,13 +616,14 @@ class XYMultiFit(FitBase):
         """
         #TODO update documentation
         #TODO None good default value for model_index?
-        _ret = super(XYMultiFit, self).add_simple_error(err_val=err_val,
-                                                   name=name,
-                                                   model_index=model_index,
-                                                   correlation=correlation,
-                                                   relative=relative,
-                                                   reference=reference,
-                                                   axis=axis)
+        _ret = FitBase.add_simple_error(self,
+                                        err_val=err_val,
+                                        name=name,
+                                        model_index=model_index,
+                                        correlation=correlation,
+                                        relative=relative,
+                                        reference=reference,
+                                        axis=axis)
 
         # need to reinitialize the nexus, since simple errors are
         # possibly relevant for nuisance parameters
@@ -701,13 +694,14 @@ class XYMultiFit(FitBase):
         :return: error id
         :rtype: int
         """
-        _ret = super(XYMultiFit, self).add_matrix_error(err_matrix=err_matrix,
-                                                   matrix_type=matrix_type,
-                                                   name=name,
-                                                   err_val=err_val,
-                                                   relative=relative,
-                                                   reference=reference,
-                                                   axis=axis)
+        _ret = FitBase.add_matrix_error(self,
+                                        err_matrix=err_matrix,
+                                        matrix_type=matrix_type,
+                                        name=name,
+                                        err_val=err_val,
+                                        relative=relative,
+                                        reference=reference,
+                                        axis=axis)
 
         # do not reinitialize the nexus, since matrix errors are not
         # relevant for nuisance parameters
@@ -899,8 +893,8 @@ class XYMultiFit(FitBase):
 
             print_dict_as_table(_data_table_dict, output_stream=output_stream, indent_level=1)
 
-        super(XYMultiFit, self).report(output_stream=output_stream,
-                                       asymmetric_parameter_errors=asymmetric_parameter_errors)
+        #super(XYMultiFit, self).report(output_stream=output_stream,
+        #                               asymmetric_parameter_errors=asymmetric_parameter_errors)
 
     def get_splice(self, data, index):
         """
