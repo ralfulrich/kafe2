@@ -275,6 +275,24 @@ class NodeBase(object):
         for _ref in _out_of_scope_refs:
             self._parents.remove(_ref)
 
+    def iter_descendants(self, depth_first=True):
+        for _child in self._children:
+            if not depth_first:
+                yield _child
+            for _descendant in _child.iter_descendants(depth_first=depth_first):
+                yield _descendant
+            if depth_first:
+                yield _child
+
+    def iter_ancestors(self, depth_first=True):
+        for _parent in self._parent:
+            if not depth_first:
+                yield _parent
+            for _ancestor in _parent.iter_ancestors(depth_first=depth_first):
+                yield _ancestor
+            if depth_first:
+                yield _parent
+
     def set_children(self, children):
         _new_children = []
         for _child in children:
@@ -354,6 +372,21 @@ class NodeBase(object):
 
         if transfer_children:
             self.set_children(_other_orig_children)
+
+    def is_ancestor_of(self, other):
+        '''``True`` iff self is an ancestor of `other`'''
+        return other.is_descendant_of(self)
+
+    def is_descendant_of(self, other):
+        '''``True`` iff self is a descendant of `other`'''
+        if self is other:
+            return True  # reached other down the line
+        for _parent in self.iter_parents():
+            # recursive call starting from each child
+            if _parent.is_descendant_of(other):
+                return True
+        # no parents
+        return False
 
     def register_callback(self, func, args=None, kwargs=None):
         self._callbacks.append(dict(func=func, args=args, kwargs=kwargs))
