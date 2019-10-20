@@ -49,6 +49,7 @@ before_install:
   - pip install --upgrade numdifftools
   - pip install --upgrade PyYAML
   - pip install --upgrade unittest2
+  - pip install --upgrade parameterized
 
   # output python version to log
   - python --version
