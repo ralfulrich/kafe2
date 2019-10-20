@@ -1,22 +1,11 @@
-import abc
 import unittest2 as unittest
 import numpy as np
-import six
-
-from scipy import stats
-
-from kafe2.core.minimizers import AVAILABLE_MINIMIZERS
-from kafe2.core.fitters import NexusFitterException
-
-from kafe2.config import kc
 
 from kafe2.fit import UnbinnedFit, UnbinnedContainer
 from kafe2.fit.unbinned.fit import UnbinnedFitException
-from kafe2.fit.unbinned.model import UnbinnedModelPDFException, UnbinnedParametricModelException
-from kafe2.fit.unbinned.cost import UnbinnedCostFunction_NegLogLikelihood
+from kafe2.fit.unbinned.model import UnbinnedModelPDFException
 
 from kafe2.test.fit.test_fit import AbstractTestFit
-
 
 
 def unbinned_model_density(x, tau=2.2, fbg=0.1):
@@ -80,8 +69,7 @@ class TestUnbinnedFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
         model_density_function = model_density_function or unbinned_model_density
 
-        # TODO: fix default
-        cost_function = cost_function or UnbinnedCostFunction_NegLogLikelihood()
+        cost_function = cost_function or 'nll'
 
         _fit = UnbinnedFit(
             data=self._ref_cont,

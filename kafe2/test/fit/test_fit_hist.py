@@ -13,7 +13,7 @@ from kafe2.config import kc
 from kafe2.fit import HistFit, HistContainer
 from kafe2.fit.histogram.fit import HistFitException
 from kafe2.fit.histogram.model import HistModelFunctionException, HistParametricModelException
-from kafe2.fit.histogram.cost import HistCostFunction_Chi2, HistCostFunction_NegLogLikelihood
+from kafe2.fit.histogram.cost import chi2, nll
 
 from kafe2.test.fit.test_fit import AbstractTestFit
 
@@ -25,9 +25,9 @@ def simple_chi2(data, model):
 def hist_model_density(x, mu=14., sigma=3.):
     return stats.norm(mu, sigma).pdf(x)
 
+
 def hist_model_density_antideriv(x, mu=14., sigma=3.):
     return stats.norm(mu, sigma).cdf(x)
-
 
 
 class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
@@ -116,14 +116,10 @@ class TestHistFitBasicInterface(AbstractTestFit, unittest.TestCase):
 
         )
 
-    def _get_fit(self, model_density_function=None, model_density_antiderivative=hist_model_density_antideriv, cost_function=None):
+    def _get_fit(self, model_density_function=None, model_density_antiderivative=hist_model_density_antideriv, cost_function='nll'):
         '''convenience'''
 
         model_density_function = model_density_function or hist_model_density
-
-        # TODO: fix default
-        cost_function = cost_function or HistCostFunction_NegLogLikelihood(
-            data_point_distribution='poisson')
 
         _fit = HistFit(
             data=self._ref_hist_cont,

@@ -8,9 +8,9 @@ from ...config import kc
 from ...core import NexusFitter, Nexus
 from ...core.fitters.nexus import Parameter, Alias
 from .._base import (FitException, FitBase, DataContainerBase,
-                     ModelParameterFormatter, CostFunctionBase)
+                     ModelParameterFormatter, CostFunction)
 from .container import HistContainer
-from .cost import HistCostFunction_NegLogLikelihood, HistCostFunction_UserDefined, STRING_TO_COST_FUNCTION
+from .cost import get_from_string
 from .model import HistParametricModel, HistModelFunction
 from .plot import HistPlotAdapter
 from ..util import function_library, add_in_quadrature, collect, invert_matrix
@@ -37,8 +37,7 @@ class HistFit(FitBase):
     def __init__(self,
                  data,
                  model_density_function=function_library.normal_distribution_pdf,
-                 cost_function=HistCostFunction_NegLogLikelihood(
-                    data_point_distribution='poisson'),
+                 cost_function='nll',
                  model_density_antiderivative=None,
                  minimizer=None,
                  minimizer_kwargs=None):
@@ -50,7 +49,7 @@ class HistFit(FitBase):
         :param model_density_function: the model density function
         :type model_density_function: :py:class:`~kafe2.fit.hist.HistModelFunction` or unwrapped native Python function
         :param cost_function: the cost function
-        :type cost_function: :py:class:`~kafe2.fit._base.CostFunctionBase`-derived or unwrapped native Python function
+        :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         """
         FitBase.__init__(self)
 
@@ -69,17 +68,18 @@ class HistFit(FitBase):
         self._validate_model_function_for_fit_raise()
 
         # set and validate the cost function
-        if isinstance(cost_function, CostFunctionBase):
+        if isinstance(cost_function, CostFunction):
             self._cost_function = cost_function
         elif isinstance(cost_function, str):
-            _cost_function_class = STRING_TO_COST_FUNCTION.get(cost_function, None)
-            if _cost_function_class is None:
-                raise HistFitException('Unknown cost function: %s' % cost_function)
-            self._cost_function = _cost_function_class()
+            self._cost_function = get_from_string(cost_function)
+            if self._cost_function is None:
+                raise self.__class__.EXCEPTION_TYPE(
+                    "Unknown cost function: %s" % cost_function)
+        elif callable(cost_function):
+            self._cost_function = CostFunction(cost_function)
         else:
-            self._cost_function = HistCostFunction_UserDefined(cost_function)
-            # self._validate_cost_function_raise()
-            # TODO: validate user-defined cost function? how?
+            raise self.__class__.EXCEPTION_TYPE(
+                "Invalid cost function: %s" % cost_function)
 
         self._fit_param_constraints = []
         self._loaded_result_dict = None

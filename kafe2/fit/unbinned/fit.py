@@ -7,9 +7,9 @@ import six
 from ...core import NexusFitter, Nexus
 from ...core.fitters.nexus import Parameter, Alias
 from ...config import kc
-from .._base import FitException, FitBase, DataContainerBase
+from .._base import FitException, FitBase, DataContainerBase, CostFunction
 from .container import UnbinnedContainer
-from .cost import UnbinnedCostFunction_UserDefined, UnbinnedCostFunction_NegLogLikelihood
+from .cost import get_from_string
 from .model import UnbinnedModelPDF, UnbinnedParametricModel
 from .plot import UnbinnedPlotAdapter
 from ..util import function_library, add_in_quadrature, collect, invert_matrix
@@ -33,7 +33,7 @@ class UnbinnedFit(FitBase):
     def __init__(self,
                  data,
                  model_density_function='gaussian',
-                 cost_function=UnbinnedCostFunction_NegLogLikelihood(),
+                 cost_function='nll',
                  minimizer=None,
                  minimizer_kwargs=None):
         """
@@ -57,9 +57,19 @@ class UnbinnedFit(FitBase):
         # validate the model function for this fit
         self._validate_model_function_for_fit_raise()
 
-        self._cost_function = cost_function
-        # Todo: implement different cost functions and check if data and cost function is compatible
-        # TODO: convert cost_function to a kafe2 cost function object if it is a string
+        # set and validate the cost function
+        if isinstance(cost_function, CostFunction):
+            self._cost_function = cost_function
+        elif isinstance(cost_function, str):
+            self._cost_function = get_from_string(cost_function)
+            if self._cost_function is None:
+                raise self.__class__.EXCEPTION_TYPE(
+                    "Unknown cost function: %s" % cost_function)
+        elif callable(cost_function):
+            self._cost_function = CostFunction(cost_function)
+        else:
+            raise self.__class__.EXCEPTION_TYPE(
+                "Invalid cost function: %s" % cost_function)
 
         self._fit_param_constraints = []
         self._loaded_result_dict = None

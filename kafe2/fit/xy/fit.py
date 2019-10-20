@@ -10,9 +10,9 @@ from ...tools import print_dict_as_table
 from ...core import NexusFitter, Nexus
 from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
 from ...config import kc
-from .._base import FitException, FitBase, DataContainerBase, CostFunctionBase
+from .._base import FitException, FitBase, DataContainerBase, CostFunction
 from .container import XYContainer
-from .cost import XYCostFunction_Chi2, XYCostFunction_UserDefined, STRING_TO_COST_FUNCTION
+from .cost import get_from_string
 from .model import XYParametricModel, XYModelFunction
 from .plot import XYPlotAdapter
 from ..util import function_library, add_in_quadrature, collect, invert_matrix
@@ -48,8 +48,7 @@ class XYFit(FitBase):
     def __init__(self,
                  xy_data,
                  model_function=function_library.linear_model,
-                 cost_function=XYCostFunction_Chi2(
-                    axes_to_use='xy', errors_to_use='covariance'),
+                 cost_function='chi2',
                  x_error_algorithm='nonlinear',
                  minimizer=None, minimizer_kwargs=None):
         """
@@ -60,7 +59,7 @@ class XYFit(FitBase):
         :param model_function: the model function
         :type model_function: :py:class:`~kafe2.fit.xy.XYModelFunction` or unwrapped native Python function
         :param cost_function: the cost function
-        :type cost_function: :py:class:`~kafe2.fit._base.CostFunctionBase`-derived or unwrapped native Python function
+        :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         :param x_error_algorithm: algorithm for handling x errors. Can be one of: ``'iterative linear'``, ``'nonlinear'``
         :type x_error_algorithm: str
         """
@@ -79,17 +78,18 @@ class XYFit(FitBase):
         self._validate_model_function_for_fit_raise()
 
         # set and validate the cost function
-        if isinstance(cost_function, CostFunctionBase):
+        if isinstance(cost_function, CostFunction):
             self._cost_function = cost_function
         elif isinstance(cost_function, str):
-            _cost_function_class = STRING_TO_COST_FUNCTION.get(cost_function, None)
-            if _cost_function_class is None:
-                raise XYFitException('Unknown cost function: %s' % cost_function)
-            self._cost_function = _cost_function_class()
+            self._cost_function = get_from_string(cost_function)
+            if self._cost_function is None:
+                raise self.__class__.EXCEPTION_TYPE(
+                    "Unknown cost function: %s" % cost_function)
+        elif callable(cost_function):
+            self._cost_function = CostFunction(cost_function)
         else:
-            self._cost_function = XYCostFunction_UserDefined(cost_function)
-            # self._validate_cost_function_raise()
-            # TODO: validate user-defined cost function? how?
+            raise self.__class__.EXCEPTION_TYPE(
+                "Invalid cost function: %s" % cost_function)
 
         # validate x error algorithm
         if x_error_algorithm not in XYFit.X_ERROR_ALGORITHMS:

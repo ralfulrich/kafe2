@@ -4,7 +4,6 @@ import six
 
 from .._base import FitEnsembleBase, FitEnsembleException
 from ..tools.ensemble import EnsembleVariable, EnsembleVariablePlotter
-from .cost import XYMultiCostFunction_Chi2
 from .fit import XYMultiFit
 
 import matplotlib as mpl
@@ -74,7 +73,7 @@ class XYMultiFitEnsemble(FitEnsembleBase):
     _DEFAULT_STATISTICS = {'mean', 'std'}
 
     def __init__(self, n_experiments, x_support, model_function, model_parameters,
-                 cost_function=XYMultiCostFunction_Chi2(axes_to_use='y', errors_to_use='covariance'),
+                 cost_function='chi2',
                  requested_results=None):
         """
         Construct an :py:obj:`~kafe2.fit.XYMultiFitEnsemble` object.
@@ -88,7 +87,7 @@ class XYMultiFitEnsemble(FitEnsembleBase):
         :param model_parameters: parameters of the "true" model
         :type model_parameters: iterable of float
         :param cost_function: the cost function
-        :type cost_function: :py:class:`~kafe2.fit._base.CostFunctionBase`-derived or unwrapped native Python function
+        :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         :param requested_results: list of result variables to collect for each toy fit
         :type requested_results: iterable of str
         """

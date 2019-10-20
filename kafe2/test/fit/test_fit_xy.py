@@ -1,17 +1,13 @@
-import abc
 import unittest2 as unittest
 import numpy as np
 import six
 
-from kafe2.core.minimizers import AVAILABLE_MINIMIZERS
 from kafe2.core.fitters import NexusFitterException
 
-from kafe2.config import kc
-
 from kafe2.fit import XYFit
+from kafe2.fit.xy.cost import get_from_string
 from kafe2.fit.xy.fit import XYFitException
-from kafe2.fit.xy.model import XYModelFunctionException, XYParametricModelException
-from kafe2.fit.xy.cost import XYCostFunction_Chi2
+from kafe2.fit.xy.model import XYModelFunctionException
 
 from kafe2.test.fit.test_fit import AbstractTestFit
 
@@ -19,11 +15,14 @@ from kafe2.test.fit.test_fit import AbstractTestFit
 def simple_chi2(y_data, y_model):
     return np.sum((y_data - y_model)**2)
 
+
 def simple_chi2_explicit_model_name(y_data, simple_xy_model):
     return np.sum((y_data - simple_xy_model)**2)
 
+
 def simple_xy_model(x, a=1.1, b=2.2, c=3.3):
     return a * x ** 2 + b * x + c
+
 
 def line_xy_model(x, a=3.0, b=0.0):
     return a * x + b
@@ -163,8 +162,8 @@ class TestXYFitBasicInterface(AbstractTestFit, unittest.TestCase):
         '''convenience'''
         model_function = model_function or simple_xy_model
         # TODO: fix default
-        cost_function = cost_function or XYCostFunction_Chi2(
-            axes_to_use='xy', errors_to_use='covariance')
+        cost_function = cost_function or 'chi2'
+
         error = error or 1.0
 
         _fit = XYFit(
@@ -524,8 +523,7 @@ class TestXYFitWithSimpleYErrors(AbstractTestFit, unittest.TestCase):
         _fit = XYFit(
             xy_data=self._ref_xy_data,
             model_function=simple_xy_model,
-            cost_function=XYCostFunction_Chi2(
-                axes_to_use='xy', errors_to_use='covariance'),
+            cost_function='chi2',
             minimizer=self.MINIMIZER
         )
 
@@ -642,8 +640,7 @@ class TestXYFitWithMatrixErrors(AbstractTestFit, unittest.TestCase):
         _fit = XYFit(
             xy_data=self._ref_xy_data,
             model_function=simple_xy_model,
-            cost_function=XYCostFunction_Chi2(
-                axes_to_use='xy', errors_to_use='covariance'),
+            cost_function='chi2',
             minimizer=self.MINIMIZER
         )
 
@@ -789,8 +786,7 @@ class TestXYFitWithXYErrors(AbstractTestFit, unittest.TestCase):
 
     def setUp(self):
         self._n_points = 16
-        self._default_cost_function = XYCostFunction_Chi2(
-            axes_to_use='xy', errors_to_use='covariance')
+        self._default_cost_function = get_from_string('chi2')
 
         # "jitter" for data smearing
         self._y_jitter = np.array([ 0.2991,  1.558 , -0.714 ,  0.825 , -1.157 ,  0.462 ,  0.103 ,
@@ -829,9 +825,15 @@ class TestXYFitWithXYErrors(AbstractTestFit, unittest.TestCase):
         self._ref_initial_cost = self._default_cost_function(
             y_data=self._ref_y_data,
             y_model=self._ref_initial_y_model,
-            projected_xy_total_cov_mat_inverse=np.linalg.inv(self._ref_projected_xy_matrix),
-            poi_values=list(self._ref_initial_pars),
-            parameter_constraints=[],
+            y_cov_mat_inverse=np.linalg.inv(self._ref_projected_xy_matrix),
+            y_total_cor_shift=None,
+            poi_values=self._ref_initial_pars,
+            parameter_constraints=None,
+            nuisance_penalty=0.0,
+            x_data=self._ref_x,
+            x_model=self._ref_x,
+            x_cov_mat_inverse=None,
+            x_total_cor_shift=None
         )
 
         # reference fit result values
@@ -846,9 +848,15 @@ class TestXYFitWithXYErrors(AbstractTestFit, unittest.TestCase):
         self._nominal_fit_result_cost = self._default_cost_function(
             y_data=self._ref_y_data,
             y_model=self._nominal_fit_result_y_model,
-            projected_xy_total_cov_mat_inverse=np.linalg.inv(self._nominal_fit_result_projected_xy_matrix),
-            poi_values=list(self._nominal_fit_result_pars),
-            parameter_constraints=[],
+            y_cov_mat_inverse=np.linalg.inv(self._nominal_fit_result_projected_xy_matrix),
+            y_total_cor_shift=None,
+            poi_values=self._ref_initial_pars,
+            parameter_constraints=None,
+            nuisance_penalty=0.0,
+            x_data=self._ref_x,
+            x_model=self._ref_x,
+            x_cov_mat_inverse=None,
+            x_total_cor_shift=None
         )
 
         # helper dict with all reference property values

@@ -3,15 +3,11 @@ import unittest2 as unittest
 import numpy as np
 import six
 
-from kafe2.core.minimizers import AVAILABLE_MINIMIZERS
 from kafe2.core.fitters import NexusFitterException
-
-from kafe2.config import kc
 
 from kafe2.fit import IndexedFit
 from kafe2.fit.indexed.fit import IndexedFitException
 from kafe2.fit.indexed.model import IndexedModelFunctionException, IndexedParametricModelException
-from kafe2.fit.indexed.cost import IndexedCostFunction_Chi2
 
 from kafe2.test.fit.test_fit import AbstractTestFit
 
@@ -19,12 +15,15 @@ from kafe2.test.fit.test_fit import AbstractTestFit
 def simple_chi2(data, model):
     return np.sum((data - model)**2)
 
+
 def simple_chi2_explicit_model_name(data, simple_indexed_model):
     return np.sum((data - simple_indexed_model)**2)
+
 
 def simple_indexed_model(a=1.1, b=2.2, c=3.3):
     x = np.arange(10)
     return a * x ** 2 + b * x + c
+
 
 def line_indexed_model(a=3.0, b=0.0):
     x = np.arange(10)
@@ -124,8 +123,7 @@ class TestIndexedFitBasicInterface(AbstractTestFit, unittest.TestCase):
         '''convenience'''
         model_function = model_function or simple_indexed_model
         # TODO: fix default
-        cost_function = cost_function or IndexedCostFunction_Chi2(
-            errors_to_use='covariance')
+        cost_function = cost_function or 'chi2'
         error = error or 1.0
 
         _fit = IndexedFit(
@@ -354,7 +352,7 @@ class TestIndexedFitWithSimpleErrors(AbstractTestFit, unittest.TestCase):
         _fit = IndexedFit(
             data=self._ref_data,
             model_function=simple_indexed_model,
-            cost_function=IndexedCostFunction_Chi2(errors_to_use='covariance'),
+            cost_function='chi2',
             minimizer=self.MINIMIZER
         )
 
@@ -468,8 +466,7 @@ class TestIndexedFitWithMatrixErrors(AbstractTestFit, unittest.TestCase):
         _fit = IndexedFit(
             data=self._ref_data,
             model_function=simple_indexed_model,
-            cost_function=IndexedCostFunction_Chi2(
-                errors_to_use='covariance'),
+            cost_function='chi2',
             minimizer=self.MINIMIZER
         )
 

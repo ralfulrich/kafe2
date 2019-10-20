@@ -10,9 +10,9 @@ from ...tools import print_dict_as_table
 from ...config import kc
 from ...core import NexusFitter, Nexus
 from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
-from .._base import FitException, FitBase, DataContainerBase, CostFunctionBase
+from .._base import FitException, FitBase, DataContainerBase, CostFunction
 from .container import IndexedContainer
-from .cost import IndexedCostFunction_Chi2, IndexedCostFunction_UserDefined, STRING_TO_COST_FUNCTION
+from .cost import get_from_string
 from .model import IndexedParametricModel, IndexedModelFunction
 from .plot import IndexedPlotAdapter
 from ..util import function_library, add_in_quadrature, collect, invert_matrix
@@ -40,9 +40,7 @@ class IndexedFit(FitBase):
     def __init__(self,
                  data,
                  model_function,
-                 cost_function=IndexedCostFunction_Chi2(
-                    errors_to_use='covariance',
-                    fallback_on_singular=True),
+                 cost_function='chi2',
                  minimizer=None,
                  minimizer_kwargs=None):
         """
@@ -53,7 +51,7 @@ class IndexedFit(FitBase):
         :param model_function: the model function
         :type model_function: :py:class:`~kafe2.fit.indexed.IndexedModelFunction` or unwrapped native Python function
         :param cost_function: the cost function
-        :type cost_function: :py:class:`~kafe2.fit._base.CostFunctionBase`-derived or unwrapped native Python function
+        :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         """
         FitBase.__init__(self)
 
@@ -67,17 +65,18 @@ class IndexedFit(FitBase):
         self._validate_model_function_for_fit_raise()
 
         # set and validate the cost function
-        if isinstance(cost_function, CostFunctionBase):
+        if isinstance(cost_function, CostFunction):
             self._cost_function = cost_function
         elif isinstance(cost_function, str):
-            _cost_function_class = STRING_TO_COST_FUNCTION.get(cost_function, None)
-            if _cost_function_class is None:
-                raise IndexedFitException('Unknown cost function: %s' % cost_function)
-            self._cost_function = _cost_function_class()
+            self._cost_function = get_from_string(cost_function)
+            if self._cost_function is None:
+                raise self.__class__.EXCEPTION_TYPE(
+                    "Unknown cost function: %s" % cost_function)
+        elif callable(cost_function):
+            self._cost_function = CostFunction(cost_function)
         else:
-            self._cost_function = IndexedCostFunction_UserDefined(cost_function)
-            # self._validate_cost_function_raise()
-            # TODO: validate user-defined cost function? how?
+            raise self.__class__.EXCEPTION_TYPE(
+                "Invalid cost function: %s" % cost_function)
 
         self._fit_param_constraints = []
         self._loaded_result_dict = None

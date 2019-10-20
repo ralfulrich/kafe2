@@ -1,48 +1,31 @@
 import numpy as np
 import unittest2 as unittest
-from scipy.special import factorial
+
+from kafe2.test.fit import KafeAssertionsMixin
+
+from scipy import stats
 
 from kafe2.core.constraint import GaussianSimpleParameterConstraint, GaussianMatrixParameterConstraint
-from kafe2.fit._base.cost import *
-from kafe2.fit.histogram.cost import *
-from kafe2.fit.indexed.cost import *
-from kafe2.fit.xy.cost import *
-from kafe2.fit.xy_multi.cost import *
+
+from kafe2.fit._base.cost import make_chi2_cost_function, make_nll_cost_function, constraints_penalty
 
 
-class TestCostBase(unittest.TestCase):
-    CHI2_COST_FUNCTION = CostFunctionBase_Chi2
-    NLL_COST_FUNCTION = CostFunctionBase_NegLogLikelihood
-    NLLR_COST_FUNCTION = CostFunctionBase_NegLogLikelihoodRatio
+class TestCostFunctionBase(KafeAssertionsMixin):
+
+    ARGDICT_TEMPLATE = dict()
+
+    def __init__(self, *args, **kwargs):
+        super(TestCostFunctionBase, self).__init__(*args, **kwargs)
 
     def setUp(self):
         self._tol = 1e-10
-        self._data = np.array([-0.5, 2.1, 8.9])
-        self._model = np.array([5.7, 8.4, -2.3])
-        self._data_poisson = np.array([0.0, 2.0, 9.0])
-        self._model_poisson = np.array([5.7, 8.4, 2.3])
-        self._res = self._data - self._model
-        self._cov_mat = np.array([
-            [1.0, 0.1, 0.2],
-            [0.1, 2.0, 0.3],
-            [0.2, 0.3, 3.0]
-        ])
-        self._cov_mat_inv = np.linalg.inv(self._cov_mat)
-        self._pointwise_errors = np.sqrt(np.diag(self._cov_mat))
 
-        self._cost_chi2_cov_mat = self._res.dot(self._cov_mat_inv).dot(self._res)
-        self._cost_chi2_pointwise = np.sum((self._res / self._pointwise_errors) ** 2)  # same as nllr_gaussian
-        self._cost_chi2_no_errors = np.sum(self._res ** 2)
-        self._cost_nll_gaussian = self._cost_chi2_pointwise + 2.0 * np.sum(np.log(np.sqrt((2.0 * np.pi)) * self._pointwise_errors))
-        #self._cost_nll_poisson = np.sum(np.log(
-        #    self._model ** self._data_rounded / (factorial(self._data_rounded) * np.exp(self._model))))
-        self._cost_nll_poisson = -2.0 * np.sum(np.log(self._model_poisson ** self._data_poisson)
-                                               - np.log(factorial(self._data_poisson)) - self._model_poisson)
-        self._cost_nllr_poisson = self._cost_nll_poisson + 2.0 * np.sum(
-            np.log(self._data_poisson ** self._data_poisson)
-            - np.log(factorial(self._data_poisson)) - self._data_poisson)
+        self._cost_values = {}
+
         self._par_vals = np.array([12.3, 0.001, -1.9])
-        self._simple_constraint = GaussianSimpleParameterConstraint(index=0, value=10.0, uncertainty=2.5)
+
+        self._simple_constraint = GaussianSimpleParameterConstraint(
+            index=0, value=10.0, uncertainty=2.5)
         self._matrix_constraint = GaussianMatrixParameterConstraint(
             indices=(0, 1, 2),
             values=(1.0, 2.0, 3.0),
@@ -52,89 +35,155 @@ class TestCostBase(unittest.TestCase):
                 [0.1, 0.1, 0.3]
             ]
         )
-        self. _par_constraints = [self._simple_constraint, self._matrix_constraint]
+        self._par_constraints = [self._simple_constraint, self._matrix_constraint]
         self._par_cost = self._simple_constraint.cost(self._par_vals) + self._matrix_constraint.cost(self._par_vals)
 
-    def test_chi2_no_errors(self):
-        self.assertTrue(np.abs(
-            self._cost_chi2_no_errors - self.CHI2_COST_FUNCTION(errors_to_use=None)
-            (self._data, self._model, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_chi2_no_errors + self._par_cost - self.CHI2_COST_FUNCTION(errors_to_use=None)
-            (self._data, self._model, self._par_vals, self._par_constraints)) < self._tol)
+        self._test_spec = {}
 
-    def test_chi2_pointwise(self):
-        self.assertTrue(np.abs(
-            self._cost_chi2_pointwise - self.CHI2_COST_FUNCTION(errors_to_use='pointwise')
-            (self._data, self._model, self._pointwise_errors, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_chi2_pointwise + self._par_cost - self.CHI2_COST_FUNCTION(errors_to_use='pointwise')
-            (self._data, self._model, self._pointwise_errors, self._par_vals, self._par_constraints)) < self._tol)
+    def test(self):
+        for _test_name, _spec in self._test_spec.items():
+            with self.subTest(name=_test_name):
 
-    def test_chi2_cov_mat(self):
-        self.assertTrue(np.abs(
-            self._cost_chi2_cov_mat - self.CHI2_COST_FUNCTION(errors_to_use='covariance')
-            (self._data, self._model, self._cov_mat_inv, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_chi2_cov_mat + self._par_cost - self.CHI2_COST_FUNCTION(errors_to_use='covariance')
-            (self._data, self._model, self._cov_mat_inv, self._par_vals, self._par_constraints)) < self._tol)
+                # check value without parameter constraints
+                _value = None
+                try:
+                    _value = _spec['cost_function'](
+                            **dict(self.ARGDICT_TEMPLATE,
+                                   **_spec['argdict']))
+                except:
+                    pass  # on error, leave value as `None` for comparison
 
-    def test_nll_gaussian(self):
-        self.assertTrue(np.abs(
-            self._cost_nll_gaussian - self.NLL_COST_FUNCTION(data_point_distribution='gaussian')
-            (self._data, self._model, self._pointwise_errors, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_nll_gaussian + self._par_cost - self.NLL_COST_FUNCTION(data_point_distribution='gaussian')
-            (self._data, self._model, self._pointwise_errors, self._par_vals, self._par_constraints)) < self._tol)
+                self._assert_compatible(
+                    value=_value,
+                    reference=_spec['reference_value'],
+                    name='cost_function',
+                    atol=self._tol
+                )
 
-    def test_nll_poisson(self):
-        self.assertTrue(np.abs(
-            self._cost_nll_poisson - self.NLL_COST_FUNCTION(data_point_distribution='poisson')
-            (self._data_poisson, self._model_poisson, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_nll_poisson + self._par_cost - self.NLL_COST_FUNCTION(data_point_distribution='poisson')
-            (self._data_poisson, self._model_poisson, self._par_vals, self._par_constraints)) < self._tol)
+                # check value with parameter constraints
+                _value_with_pc = None
+                try:
+                    _value_with_pc = _spec['cost_function'](
+                            **dict(self.ARGDICT_TEMPLATE,
+                                   poi_values=self._par_vals,
+                                   parameter_constraints=self._par_constraints,
+                                   **_spec['argdict']))
+                except:
+                    pass  # on error, leave value as `None` for comparison
 
-    def test_nllr_gaussian(self):
-        self.assertTrue(np.abs(
-            self._cost_chi2_pointwise - self.NLLR_COST_FUNCTION(data_point_distribution='gaussian')
-            (self._data, self._model, self._pointwise_errors, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_chi2_pointwise + self._par_cost - self.NLLR_COST_FUNCTION(data_point_distribution='gaussian')
-            (self._data, self._model, self._pointwise_errors, self._par_vals, self._par_constraints)) < self._tol)
+                _ref_val = _spec['reference_value']
+                if _ref_val is not None:
+                    _ref_val += self._par_cost
 
-    def test_nllr_poisson(self):
-        self.assertTrue(np.abs(
-            self._cost_nllr_poisson - self.NLLR_COST_FUNCTION(data_point_distribution='poisson')
-            (self._data_poisson, self._model_poisson, None, None)) < self._tol)
-        self.assertTrue(np.abs(
-            self._cost_nllr_poisson + self._par_cost - self.NLLR_COST_FUNCTION(data_point_distribution='poisson')
-            (self._data_poisson, self._model_poisson, self._par_vals, self._par_constraints)) < self._tol)
+                self._assert_compatible(
+                    value=_value_with_pc,
+                    reference=_ref_val,
+                    name='cost_function',
+                    atol=self._tol
+                )
 
 
-class TestCostHist(TestCostBase):
+class TestCostFunctionChi2(TestCostFunctionBase, unittest.TestCase):
 
-    CHI2_COST_FUNCTION = HistCostFunction_Chi2
-    NLL_COST_FUNCTION = HistCostFunction_NegLogLikelihood
-    NLLR_COST_FUNCTION = HistCostFunction_NegLogLikelihoodRatio
+    ARGDICT_TEMPLATE = dict(
+        data=None, model=None,
+        cov_mat_inverse=None,
+        poi_values=None, parameter_constraints=None
+    )
+
+    def setUp(self):
+        TestCostFunctionBase.setUp(self)
+
+        self._data = np.array([-0.5, 2.1, 8.9])
+        self._model = np.array([5.7, 8.4, -2.3])
+
+        self._cov_mat = np.array([
+            [1.0, 0.1, 0.2],
+            [0.1, 2.0, 0.3],
+            [0.2, 0.3, 3.0]
+        ])
+        self._cov_mat_inv = np.linalg.inv(self._cov_mat)
+        self._pointwise_errors = np.sqrt(np.diag(self._cov_mat))
+
+        self._res = self._data - self._model
+
+        _generic_chi2 = make_chi2_cost_function(
+            data_name='data',
+            model_name='model',
+            cov_mat_inverse_name='cov_mat_inverse',
+            singular_behavior='ones'
+        ) + constraints_penalty
+
+        self._test_spec = dict(
+            no_cov_mat_inverse_ones=dict(
+                cost_function=make_chi2_cost_function(
+                    data_name='data',
+                    model_name='model',
+                    cov_mat_inverse_name='cov_mat_inverse',
+                    singular_behavior='ones'
+                ) + constraints_penalty,
+                argdict=dict(
+                    data=self._data,
+                    model=self._model),
+                reference_value=np.sum(self._res ** 2)
+            ),
+            no_cov_mat_inverse_raise=dict(
+                cost_function=make_chi2_cost_function(
+                    data_name='data',
+                    model_name='model',
+                    cov_mat_inverse_name='cov_mat_inverse',
+                    singular_behavior='raise'
+                ) + constraints_penalty,
+                argdict=dict(
+                    data=self._data,
+                    model=self._model),
+                reference_value=None
+            ),
+            cov_mat=dict(
+                cost_function=make_chi2_cost_function(
+                    data_name='data',
+                    model_name='model',
+                    cov_mat_inverse_name='cov_mat_inverse',
+                    singular_behavior='raise'
+                ) + constraints_penalty,
+                argdict=dict(
+                    data=self._data,
+                    model=self._model,
+                    cov_mat_inverse=self._cov_mat_inv),
+                reference_value=self._res.dot(self._cov_mat_inv).dot(self._res),
+            ),
+        )
 
 
-class TestCostIndexed(TestCostBase):
+class TestCostFunctionNLL(TestCostFunctionBase, unittest.TestCase):
 
-    CHI2_COST_FUNCTION = IndexedCostFunction_Chi2
-    NLL_COST_FUNCTION = IndexedCostFunction_NegLogLikelihood
-    NLLR_COST_FUNCTION = IndexedCostFunction_NegLogLikelihoodRatio
+    ARGDICT_TEMPLATE = dict(
+        data=None, model=None,
+        poi_values=None, parameter_constraints=None
+    )
 
+    def setUp(self):
+        TestCostFunctionBase.setUp(self)
 
-class TestCostXY(TestCostBase):
+        self._data = np.array([0.0, 2.0, 9.0])
+        self._model = np.array([5.7, 8.4, 2.3])
 
-    CHI2_COST_FUNCTION = XYCostFunction_Chi2
-    NLL_COST_FUNCTION = XYCostFunction_NegLogLikelihood
-    NLLR_COST_FUNCTION = XYCostFunction_NegLogLikelihoodRatio
+        _generic_chi2 = make_chi2_cost_function(
+            data_name='data',
+            model_name='model',
+            cov_mat_inverse_name='cov_mat_inverse'
+        )
 
-
-class TestCostXYMulti(TestCostBase):
-
-    CHI2_COST_FUNCTION = XYMultiCostFunction_Chi2
-    NLL_COST_FUNCTION = XYMultiCostFunction_NegLogLikelihood
-    NLLR_COST_FUNCTION = XYMultiCostFunction_NegLogLikelihoodRatio
+        self._test_spec = dict(
+            poisson=dict(
+                cost_function=make_nll_cost_function(
+                    data_name='data',
+                    model_name='model',
+                    log_pdf=stats.poisson.logpmf
+                ) + constraints_penalty,
+                argdict=dict(
+                    data=self._data,
+                    model=self._model),
+                reference_value=-2 * np.sum(stats.poisson.logpmf(self._data, self._model))
+            ),
+        )

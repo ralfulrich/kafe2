@@ -1,31 +1,22 @@
-import abc
 import unittest2 as unittest
 import numpy as np
 import six
 
-from kafe2.core.minimizers import AVAILABLE_MINIMIZERS
 from kafe2.core.fitters import NexusFitterException
 
-from kafe2.config import kc
-
 from kafe2.fit import XYMultiFit
-from kafe2.fit.xy_multi.fit import XYMultiFitException
 from kafe2.fit.xy_multi.model import XYMultiModelFunctionException
-from kafe2.fit.xy.model import XYModelFunctionException
-from kafe2.fit.xy_multi.cost import XYMultiCostFunction_Chi2
 
-from .test_fit import AbstractTestFit
-from .test_fit_xy import (TestXYFitBasicInterface, simple_chi2,
-    simple_chi2_explicit_model_name,
-    analytic_solution)
+from kafe2.test.fit.test_fit import AbstractTestFit
+from kafe2.test.fit.test_fit_xy import (TestXYFitBasicInterface, simple_chi2, analytic_solution)
 
 
 def simple_xy_model(x, b=1.1, c=2.2, d=3.3):
     return b * x ** 2 + c * x + d
 
+
 def simple_xy_model_2(x, a=0.5, b=1.1, c=2.2, d=3.3):
     return a * x ** 3 + b * x ** 2 + c * x + d
-
 
 
 class TestXYMultiFitBasicInterface(AbstractTestFit, unittest.TestCase):
@@ -125,8 +116,7 @@ class TestXYMultiFitBasicInterface(AbstractTestFit, unittest.TestCase):
             xy_data=data,
             model_function=models,
             # TODO: fix default
-            cost_function=XYMultiCostFunction_Chi2(
-                axes_to_use='xy', errors_to_use='covariance'),
+            cost_function='chi2',
             minimizer=self.MINIMIZER,
             #x_error_algorithm='nonlinear',  # TODO: test other algorithms
         )
