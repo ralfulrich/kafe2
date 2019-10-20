@@ -2,7 +2,7 @@ from collections import OrderedDict
 
 from ...config import kc
 from ..minimizers import get_minimizer
-
+from .nexus import Nexus
 
 class NexusFitterException(Exception):
     pass
@@ -11,6 +11,10 @@ class NexusFitterException(Exception):
 class NexusFitter(object):
 
     def __init__(self, nexus, parameters_to_fit, parameter_to_minimize, minimizer=None, minimizer_kwargs=None):
+        if not isinstance(nexus, Nexus):
+            raise TypeError(
+                "Cannot initialize NexusFitter: invalid nexus! "
+                "Expected '{}', got '{}'".format(Nexus, type(nexus)))
         self._nx = nexus
 
         self.parameters_to_fit = parameters_to_fit

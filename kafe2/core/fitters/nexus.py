@@ -594,6 +594,10 @@ class Alias(ValueNode):
 
     @ref.setter
     def ref(self, ref):
+        # remove self from old ref's parents to prevent warning
+        # if self gets garbage collected
+        if self._children:
+            self.ref.remove_parent(self)
         self.set_children([ref])
         ref.add_parent(self)
 
@@ -786,7 +790,10 @@ class NodeChildrenPrinter(object):
 class NodeSubgraphGraphvizSourceProducer(object):
     _NODE_STYLE = {
         Function: dict(
-            shape='"box"'),
+            shape='"box"',
+            fillcolor=lambda node: '"cyan"' if node.frozen else '"white"',
+            style='"filled"',
+        ),
         Alias: dict(
             shape='"cds"'),
         Fallback: dict(
@@ -794,7 +801,9 @@ class NodeSubgraphGraphvizSourceProducer(object):
         Empty: dict(
             shape='"Mcircle"'),
     }
-    def __init__(self, root_node, exclude=None):
+    def __init__(self, root_node, exclude=None,
+                 follow_parents=True, show_parents=True, with_node_values=True):
+
         self._root = root_node
         self._exclude = exclude or set()
         self._nodes = set()
@@ -802,6 +811,9 @@ class NodeSubgraphGraphvizSourceProducer(object):
         self._connected_nodes = set()
         self._full_edges = set()
         self._dashed_edges = set()
+        self._show_parents = show_parents
+        self._follow_parents = follow_parents
+        self._with_values = with_node_values
 
     def visit(self, node):
         self._nodes.add(node)
@@ -814,14 +826,15 @@ class NodeSubgraphGraphvizSourceProducer(object):
             )
             self._nodes.add(_c)
 
-        for _p in node.iter_parents():
-            self._nodes.add(node)
-            if node in self._exclude or _p in self._exclude:
-                continue
-            self._dashed_edges.add(
-                (_p, node)
-            )
-            self._nodes.add(_p)
+        if self._show_parents and self._follow_parents:
+            for _p in node.iter_parents():
+                self._nodes.add(node)
+                if node in self._exclude or _p in self._exclude:
+                    continue
+                self._dashed_edges.add(
+                    (_p, node)
+                )
+                self._nodes.add(_p)
 
     def run(self, node=None, node_chain=None, out_stream=None):
         node = node if node is not None else self._root
@@ -841,8 +854,9 @@ class NodeSubgraphGraphvizSourceProducer(object):
         for _c in node.iter_children():
             NodeSubgraphGraphvizSourceProducer.run(self, _c, node_chain=node_chain)
         # recursively visit parents
-        for _p in node.iter_parents():
-            NodeSubgraphGraphvizSourceProducer.run(self, _p, node_chain=node_chain)
+        if self._follow_parents:
+            for _p in node.iter_parents():
+                NodeSubgraphGraphvizSourceProducer.run(self, _p, node_chain=node_chain)
 
         if _first_call:
 
@@ -867,15 +881,26 @@ class NodeSubgraphGraphvizSourceProducer(object):
             for _n in _connected_nodes:
                 if _n in self._exclude:
                     continue
+
+                _val = None
+                if self._with_values:
+                    try:
+                        _val = _n.value
+                    except Exception as _exc:
+                        _val = _exc
+                    finally:
+                        _val = '<br />'+str(_val).replace('\n', '<br />')
+
                 out_stream.write(
                     '  {0.name} [label=<<i>{0.__class__.__name__}</i>'
-                    '<br />{0.name}>, {1}]\n'.format(
+                    '<br />{0.name}<br />{value}>, {1}]\n'.format(
                         _n,
                         ', '.join([
-                            "{}={}".format(_k, _v)
+                            "{}={}".format(_k, _v(_n) if callable(_v) else _v)
                             for _k, _v
                             in self._NODE_STYLE.get(_n.__class__, {}).items()
                         ] + (['style=filled', 'fillcolor=yellow'] if _n in _leaf_nodes else [])),
+                        value=(_val or '')
                     )
                 )
 
