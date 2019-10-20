@@ -27,7 +27,7 @@ class ModelParameterFormatter(FileIOMixin, object):
 
     The formatted string is obtained by calling the :py:meth:`~ModelParameterFormatter.get_formatted` method.
     """
-    def __init__(self, name, value=None, error=None, asymmetric_error=None, latex_name=None):
+    def __init__(self, name, value=None, error=None, asymmetric_error=None, latex_name=None, tags=None):
         """
 
         Construct a :py:obj:`Formatter` for a model function:
@@ -43,11 +43,13 @@ class ModelParameterFormatter(FileIOMixin, object):
         :param value: the parameter value (``float``)
         :param error: the parameter error: ``float`` (tuple of 2 ``floats``) for symmetric (asymmetric) error
         :param latex_name: a LaTeX-formatted string indicating the parameter name
+        :param tags: set of strings meant to describe parameter stare (fixed, limited, etc.)
         """
         self.value = value
 
         self.error = error
         self.asymmetric_error = asymmetric_error
+        self.tags = tags
 
         self._name = name
         self._latex_name = latex_name
@@ -132,7 +134,16 @@ class ModelParameterFormatter(FileIOMixin, object):
             return None
         return self.asymmetric_error[0]
 
-    def get_formatted(self, with_name=False, with_value=True, with_errors=True, n_significant_digits=2,
+    @property
+    def tags(self):
+        """the parameter tags"""
+        return self._tags
+
+    @tags.setter
+    def tags(self, tags):
+        self._tags = set(tags or [])
+
+    def get_formatted(self, with_name=False, with_value=True, with_errors=True, with_tags=True, n_significant_digits=2,
                       round_value_to_error=True, asymmetric_error=False, format_as_latex=False):
         """
         Get a formatted string representing this model parameter.
@@ -143,6 +154,8 @@ class ModelParameterFormatter(FileIOMixin, object):
         :type with_value: bool
         :param with_errors: if ``True``, output will include the parameter error/errors
         :type with_errors: bool
+        :param with_tags: if ``True``, output will include the parameter tags
+        :type with_tags: bool
         :param n_significant_digits: number of significant digits for rounding
         :type n_significant_digits: int
         :param round_value_to_error: if ``True``, the parameter value will be rounded to the same precision as the error
@@ -211,6 +224,10 @@ class ModelParameterFormatter(FileIOMixin, object):
             if format_as_latex:
                 _display_string = re.sub(r'(-?\d*\.?\d+?)0*e\+?(-?[0-9]*[1-9]?)',
                                          r'\1\\times10^{\2}', _display_string)
+
+        if with_tags and self.tags:
+            _display_string += ' ({})'.format(', '.join(self.tags))
+
         return _display_string
 
 
