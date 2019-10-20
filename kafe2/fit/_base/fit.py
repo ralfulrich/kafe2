@@ -11,12 +11,14 @@ from kafe2.core.constraint import GaussianMatrixParameterConstraint, GaussianSim
 from ...tools import print_dict_as_table
 
 from ...core import NexusFitter, Nexus
-from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
+from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError, Array
 
 from ...config import kc
 from .container import DataContainerException
+from .cost import CostFunction
+from .format import ModelParameterFormatter
 from ..io.file import FileIOMixin
-from ..util import function_library, add_in_quadrature, collect, invert_matrix, string_join_if, zip_longest_dict
+from ..util import function_library, add_in_quadrature, invert_matrix, maybe_invert_matrix, string_join_if
 
 __all__ = ["FitBase", "FitException"]
 
@@ -36,12 +38,25 @@ class FitBase(FileIOMixin, object):
     MODEL_TYPE = None
     PLOT_ADAPTER_TYPE = None
     EXCEPTION_TYPE = FitException
+    COST_FUNCTION_GETTER = None
     RESERVED_NODE_NAMES = None
 
     # nexus nodes '<axis>_data' etc. are added for these
     AXES = None
 
-    def __init__(self):
+    def __init__(self,
+                 model_function_spec,
+                 cost_function_spec,
+                 minimizer=None,
+                 minimizer_kwargs=None):
+        """
+        Construct a fit.
+
+        :param model_function_spec: model function specification
+        :param cost_function_spec: cost function specification
+        :param minimizer: minimizer specification
+        :param minimizer_kwargs: minimizer keyword arguments
+        """
         self._data_container = None
         self._param_model = None
         self._nexus = None
@@ -49,28 +64,39 @@ class FitBase(FileIOMixin, object):
         self._poi_value_dict = None
         self._poi_names = None
         self._fit_param_names = None
-        self._fit_param_constraints = None
+        self._fit_param_constraints = []
         self._model_function = None
         self._cost_function = None
+        self._nuisance_parameter_formatters = None
+        self._parameter_tags = dict()
         self._loaded_result_dict = None  # contains potential fit results when loading from a file
+        self._minimizer = minimizer
+        self._minimizer_kwargs = minimizer_kwargs
+
+        self._init_model_function(model_function_spec)
+        self._init_cost_function(cost_function_spec)
+        self._init_fit_parameters()
+
         super(FitBase, self).__init__()
 
     # -- private methods
 
-    def _print_nexus_graphviz_source(self):
+    def _print_nexus_graphviz_source(self, with_node_values=False):
         '''for debugging'''
         from kafe2.core.fitters.nexus import NodeSubgraphGraphvizSourceProducer
         NodeSubgraphGraphvizSourceProducer(
             self._nexus.get('__root__'),
-            exclude={self._nexus.get('__root__')}
+            exclude={self._nexus.get('__root__')},
+            with_node_values=with_node_values
         ).run()
 
-    def _view_nexus_graphviz(self):
+    def _view_nexus_graphviz(self, with_node_values=False):
         '''for debugging'''
         from kafe2.core.fitters.nexus import NodeSubgraphGraphvizViewer
         NodeSubgraphGraphvizViewer(
             self._nexus.get('__root__'),
-            exclude={self._nexus.get('__root__')}
+            exclude={self._nexus.get('__root__')},
+            with_node_values=with_node_values
         ).run()
 
     def _add_property_to_nexus(self, prop, nexus=None, name=None, depends_on=None):
@@ -92,16 +118,77 @@ class FitBase(FileIOMixin, object):
 
         return _node
 
-    def _init_fit_parameters(self):
+    def _init_model_function(self, model_function_spec):
+        # set/construct the model function object
+        if isinstance(model_function_spec, self.__class__.MODEL_FUNCTION_TYPE):
+            self._model_function = model_function_spec
+        else:
+            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function_spec)
 
+        # validate the model function for this fit
+        self._validate_model_function_for_fit_raise()
+
+    def _init_cost_function(self, cost_function_spec):
+        if isinstance(cost_function_spec, CostFunction):
+            self._cost_function = cost_function_spec
+        elif isinstance(cost_function_spec, str):
+            self._cost_function = self.__class__.COST_FUNCTION_GETTER(cost_function_spec)
+            if self._cost_function is None:
+                raise self.__class__.EXCEPTION_TYPE('Unknown cost function: %s' % cost_function_spec)
+        elif callable(cost_function_spec):
+            self._cost_function = CostFunction(cost_function_spec)
+        else:
+            raise self.__class__.EXCEPTION_TYPE('Invalid cost function: %s' % cost_function_spec)
+
+    def _init_fit_parameters(self):
         # get names and default values of all model parameters
-        self._poi_value_dict = self._get_default_values(
-            model_function=self._model_function,
-            x_name=getattr(self._model_function, 'x_name', None)
-        )
+        if not self._poi_value_dict:
+            self._poi_value_dict = self._get_default_values(
+                model_function=self._model_function,
+                x_name=getattr(self._model_function, 'x_name', None)
+            )
 
         self._fit_param_names = list(self._poi_value_dict)
         self._poi_names = tuple(self._poi_value_dict)
+
+        # cannot determine nuisance parameters if no nexus is present
+        if not self._nexus:
+            self._nuisance_parameter_formatters = None
+            return
+
+        # add nuisance parameters for fully correlated errors
+        _new_nuis_par_names = []
+        for _axis in (self.AXES or (None,)):
+            for _type in ('data', 'model'):
+
+                # determine name of nuisance parameter array in nexus
+                _nuis_vec_name = string_join_if((_axis, _type, 'cor_shift_nuis'))
+
+                # retrieve nuisance parameter array node from nexus
+                _nuis_vec_node = self._nexus.get(_nuis_vec_name)
+
+                # node not found -> skip
+                if _nuis_vec_node is None:
+                    continue
+
+                # skip adding nuisance parameters if cost function does not depend on them
+                if not _nuis_vec_node.is_descendant_of(self._nexus.get('cost')):
+                    continue
+
+                # append names of nuisance parameters to list of fit parameters
+                _new_nuis_par_names += [
+                    _nuis_node.name
+                    for _nuis_node in _nuis_vec_node.iter_children()
+                ]
+
+        self._fit_param_names += _new_nuis_par_names
+
+        self._nuisance_parameter_formatters = [
+            ModelParameterFormatter(_nuis_par_name, tags={'nuisance'})
+            for _nuis_par_name in self._fit_param_names[len(self._poi_names):]
+        ]
+
+        self._fitter = None  # need to reinitialize fitter with new fit parameters
 
     def _init_nexus(self, nexus=None):
         '''initialize a nexus or update an existing nexus'''
@@ -115,9 +202,12 @@ class FitBase(FileIOMixin, object):
         # -- data and model-related nodes
 
         _added = {}
+        _nuis_par_nodes = []
+        _nuis_shift_nodes = []
         for _axis in (self.AXES or (None,)):
+            _axes_nuis_shift_nodes = []
             for _type in ('data', 'model'):
-                for _prop in (None, 'error', 'cov_mat', 'cor_mat'):
+                for _prop in (None, 'cov_mat', 'cor_mat'):
 
                     _full_prop = string_join_if((_axis, _type, _prop))
 
@@ -136,17 +226,62 @@ class FitBase(FileIOMixin, object):
                     if _prop == 'cov_mat':
                         # add inverse cov mat node to nexus
                         nexus.add_function(
-                            invert_matrix,
+                            maybe_invert_matrix,
                             _full_prop + '_inverse',
                             par_names=(_full_prop,)
                         )
 
+                # -- nuisance parameters due to fully correlated errors
+
+                _cont = self._data_container if _type == 'data' else self._param_model
+                if _axis:
+                    _g, _u = _cont.split_errors(_axis)
+                else:
+                    _g, _u = _cont.split_errors()
+
+                # non-fully-correlated uncertainty matrix
+                _full_prop = string_join_if((_axis, _type, 'uncor_cov_mat'))
+                _added[_full_prop] = nexus.add(
+                    Parameter(_u, name=_full_prop)
+                )
+
+                # nuisance parameter array
+                _nuis_prefix = string_join_if((_axis, _type, 'cor_shift'))
+                _nuis_vec_name = string_join_if((_nuis_prefix, 'nuis'))
+                _added[_nuis_vec_name] = _nuis = nexus.add(
+                    Array([
+                        Parameter(0.0, name=string_join_if((_nuis_vec_name, str(i))))
+                        for i in range(_g.shape[0])
+                    ], name=_nuis_vec_name)
+                )
+
+                # linear shift design matrix (k x n)
+                _des_mat_name = string_join_if((_nuis_prefix, 'des_mat'))
+                _added[_des_mat_name] = nexus.add(
+                    Parameter(_g, name=_des_mat_name)
+                )
+
+                # data/model shift due to correlated uncertainties
+                _added[_nuis_prefix] = nexus.add_function(
+                    lambda des_mat, nuis_vec: nuis_vec.dot(des_mat),
+                    func_name=_nuis_prefix,
+                    par_names=(_des_mat_name, _nuis_vec_name),
+                    existing_behavior='replace_if_empty'
+                )
+
+                # keep track of nuisance parameter nodes
+                _nuis_shift_nodes.append(_nuis_prefix)
+                _axes_nuis_shift_nodes.append(_nuis_prefix)
+                _nuis_par_nodes.append(_nuis_vec_name)
+
             # aggregate (i.e. 'total') properties
-            for _prop in ('error', 'cov_mat'):
+            for _prop in ('cov_mat', 'uncor_cov_mat', 'cor_shift', 'cor_shift_nuis', 'cor_shift_des_mat'):
 
                 # determine correct aggregation function
                 if _prop == 'error':
                     _func = add_in_quadrature
+                elif _prop in ('cor_shift_nuis', 'cor_shift_des_mat'):
+                    _func = lambda a, b: np.concatenate([a, b])
                 else:
                     _func = np.ndarray.__add__
 
@@ -168,20 +303,37 @@ class FitBase(FileIOMixin, object):
                     )
 
                 # add inverse
-                if _prop != 'error':
+                if 'cov_mat' in _prop:
                     nexus.add_function(
-                        invert_matrix,
+                        maybe_invert_matrix,
                         func_name=_full_prop + '_inverse',
                         par_names=(_full_prop,),
                         existing_behavior='ignore'
                     )
+
+            # -- nominal per-axis covariance matrices (and inverses)
+
+            # Note: these are the covariance matrices used in the standard cost
+            # functions. They are initially aliases for 'total_cov_mat', but this
+            # can be overridden by specialized fit types
+            _nominal_cov_mat_name = string_join_if((_axis, 'cov_mat'))
+            nexus.add_alias(
+                _nominal_cov_mat_name,
+                alias_for=string_join_if((_axis, 'total_uncor_cov_mat'))
+            )
+            nexus.add_function(
+                # invert_matrix,
+                maybe_invert_matrix,
+                func_name=_nominal_cov_mat_name + '_inverse',
+                par_names=(_nominal_cov_mat_name,),
+            )
 
 
         # -- concatenation of data and model across all axes
 
         if self.AXES is not None:
             for _type in ('data', 'model'):
-                for _prop in (None, 'error', 'cov_mat', 'cor_mat'):
+                for _prop in (None, 'cov_mat', 'cor_mat'):
                     nexus.add_function(
                         lambda *args: np.array(args),
                         func_name=string_join_if((_type, _prop)),
@@ -196,10 +348,26 @@ class FitBase(FileIOMixin, object):
         for _pn, _pv in six.iteritems(self._poi_value_dict):
             self._nexus.add(Parameter(_pv, name=_pn))
 
+        # -- gaussian penalty term for nuisance parameters
+
+        self._nexus.add_function(
+            lambda *args: np.sum([np.sum(arg**2) for arg in args]),
+            func_name='nuisance_penalty',
+            par_names=_nuis_par_nodes
+        )
+
+        # -- total shift in model due to nuisance parameters
+
+        # self._nexus.add_function(
+        #     lambda *args: np.sum(args, axis=0),
+        #     func_name='nuisance_shift',
+        #     par_names=_nuis_shift_nodes
+        # )
+
         self._add_property_to_nexus(
             'poi_values', nexus=nexus, depends_on=self._poi_names)
         self._add_property_to_nexus(
-            'parameter_values', nexus=nexus, depends_on='poi_values')
+            'parameter_values', nexus=nexus, depends_on=('poi_values', *_nuis_par_nodes))
         self._add_property_to_nexus(
             'parameter_constraints', nexus=nexus)
 
@@ -226,20 +394,12 @@ class FitBase(FileIOMixin, object):
             existing_behavior='ignore'  # allow 'model' as function name for model
         )
 
-        # -- nuisance parameters
-
-        # TODO: implement nuisance parameters
-
-        #nexus.add_function(
-        #    collect,
-        #    func_name="nuisance_vector"
-        #)
-
         # -- cost function
 
         # the cost function (the function to be minimized)
         _cost_node = nexus.add_function(
             self._cost_function.func,
+            par_names=self._cost_function.parameter_names,
             func_name='cost',
         )
 
@@ -341,13 +501,46 @@ class FitBase(FileIOMixin, object):
             with_expression=True)
 
     def _update_parameter_formatters(self, update_asymmetric_errors=False):
-        for _fpf, _pv, _pe in zip(
-                self._model_function.argument_formatters, self.parameter_values, self.parameter_errors):
+        # -- model parameters
+
+        # update formatters
+        for _fpf, _pn, _pv, _pe in zip(
+                self._model_function.argument_formatters, self.poi_names, self.poi_values, self.poi_errors):
             _fpf.value = _pv
             _fpf.error = _pe
+            if _pn in self._parameter_tags:
+                _fpf.tags = self._parameter_tags[_pn]
+
+        # update asymmetric errors
         if update_asymmetric_errors:
             for _fpf, _ape in zip(self._model_function.argument_formatters, self.asymmetric_parameter_errors):
                 _fpf.asymmetric_error = _ape
+
+        # -- nuisance parameters
+
+        # sanity check
+        if self._nuisance_parameter_formatters:
+            assert len(self._nuisance_parameter_formatters) == len(self.parameter_values[len(self.poi_names):])
+            assert len(self._nuisance_parameter_formatters) == len(self.parameter_errors[len(self.poi_names):])
+
+        # update formatters
+        for _fpf, _pv, _pe in zip(
+                self._nuisance_parameter_formatters or (),
+                self.parameter_values[len(self.poi_names):],
+                self.parameter_errors[len(self.poi_names):]):
+            _fpf.value = _pv
+            _fpf.error = _pe
+
+    def _get_fitter(self):
+        if self._fitter is None:
+            self._init_nexus()
+            self._initialize_fitter(self._minimizer, self._minimizer_kwargs)
+        return self._fitter
+
+    def _get_nexus(self):
+        if self._nexus is None:
+            self._init_nexus()
+        return self._nexus
 
     # -- public properties
 
@@ -374,6 +567,8 @@ class FitBase(FileIOMixin, object):
         # FIXME: nicer way than len()?
         self._cost_function.ndf = self._data_container.size - len(self._param_model.parameters)
 
+        self._nexus = None  # resetting the data will reset the nexus
+
     @property
     @abc.abstractmethod
     def model(self): pass
@@ -388,9 +583,7 @@ class FitBase(FileIOMixin, object):
     @property
     def parameter_names(self):
         """the current parameter names"""
-        if not self._fitter:
-            return self.poi_names
-        return self._fitter.parameters_to_fit
+        return self._get_fitter().parameters_to_fit
 
     @property
     def parameter_errors(self):
@@ -398,7 +591,7 @@ class FitBase(FileIOMixin, object):
         if self._loaded_result_dict is not None:
             return self._loaded_result_dict['parameter_errors']
         else:
-            return self._fitter.fit_parameter_errors
+            return self._get_fitter().fit_parameter_errors
 
     @property
     def parameter_cov_mat(self):
@@ -406,7 +599,7 @@ class FitBase(FileIOMixin, object):
         if self._loaded_result_dict is not None:
             return self._loaded_result_dict['parameter_cov_mat']
         else:
-            return self._fitter.fit_parameter_cov_mat
+            return self._get_fitter().fit_parameter_cov_mat
 
     @property
     def parameter_cor_mat(self):
@@ -414,7 +607,7 @@ class FitBase(FileIOMixin, object):
         if self._loaded_result_dict is not None:
             return self._loaded_result_dict['parameter_cor_mat']
         else:
-            return self._fitter.fit_parameter_cor_mat
+            return self._get_fitter().fit_parameter_cor_mat
 
     @property
     def asymmetric_parameter_errors(self):
@@ -422,12 +615,12 @@ class FitBase(FileIOMixin, object):
         if self._loaded_result_dict is not None and self._loaded_result_dict['asymmetric_parameter_errors'] is not None:
             return self._loaded_result_dict['asymmetric_parameter_errors']
         else:
-            return self._fitter.asymmetric_fit_parameter_errors
+            return self._get_fitter().asymmetric_fit_parameter_errors
 
     @property
     def parameter_name_value_dict(self):
         """a dictionary mapping each parameter name to its current value"""
-        return self._fitter.fit_parameter_values if self._fitter else self._poi_value_dict
+        return self._get_fitter().fit_parameter_values if self._fitter else self._poi_value_dict
 
     @property
     def parameter_constraints(self):
@@ -437,7 +630,7 @@ class FitBase(FileIOMixin, object):
     @property
     def cost_function_value(self):
         """the current value of the cost function"""
-        return self._fitter.parameter_to_minimize_value
+        return self._get_fitter().parameter_to_minimize_value
 
     @property
     def data_size(self):
@@ -470,6 +663,11 @@ class FitBase(FileIOMixin, object):
         return tuple((self.parameter_name_value_dict[_pn] for _pn in self.poi_names))
 
     @property
+    def poi_errors(self):
+        """the values of the parameters of interest, equal to ``self.parameter_values`` minus nuisance parameters"""
+        return tuple(self.parameter_errors[:len(self.poi_names)])
+
+    @property
     def poi_names(self):
         """the names of the parameters of interest, equal to ``self.parameter_names`` minus nuisance parameter names"""
         return self._poi_names
@@ -479,8 +677,10 @@ class FitBase(FileIOMixin, object):
         """whether a fit was performed for the given data and model"""
         if self._loaded_result_dict is not None:
             return self._loaded_result_dict['did_fit']
+        elif self._fitter is None:
+            return False
         else:
-            return self._fitter.state_is_from_minimizer
+            return self._get_fitter().state_is_from_minimizer
 
     # -- public methods
 
@@ -491,7 +691,7 @@ class FitBase(FileIOMixin, object):
 
         :param param_name_value_dict: new parameter values
         """
-        return self._fitter.set_fit_parameter_values(**param_name_value_dict)
+        return self._get_fitter().set_fit_parameter_values(**param_name_value_dict)
 
     def set_all_parameter_values(self, param_value_list):
         """
@@ -499,7 +699,7 @@ class FitBase(FileIOMixin, object):
 
         :param param_value_list: list of parameter values (mind the order)
         """
-        return self._fitter.set_all_fit_parameter_values(param_value_list)
+        return self._get_fitter().set_all_fit_parameter_values(param_value_list)
 
     def fix_parameter(self, name, value=None):
         """
@@ -511,6 +711,7 @@ class FitBase(FileIOMixin, object):
         :type value: float
         """
         self._fitter.fix_parameter(par_name=name, par_value=value)
+        self._parameter_tags.setdefault(name, set()).add('fixed')
 
     def release_parameter(self, par_name):
         """
@@ -520,6 +721,8 @@ class FitBase(FileIOMixin, object):
         :type par_name: str
         """
         self._fitter.release_parameter(par_name=par_name)
+        if par_name in self._parameter_tags:
+            self._parameter_tags[par_name] -= {'fixed'}
 
     def limit_parameter(self, par_name, par_limits):
         """
@@ -530,6 +733,7 @@ class FitBase(FileIOMixin, object):
         :type par_limits: tuple
         """
         self._fitter.limit_parameter(par_name, par_limits)
+        self._parameter_tags.setdefault(par_name, set()).add('limited')
 
     def unlimit_parameter(self, par_name):
         """
@@ -538,6 +742,8 @@ class FitBase(FileIOMixin, object):
         :type par_name: str
         """
         self._fitter.unlimit_parameter(par_name)
+        if par_name in self._parameter_tags:
+            self._parameter_tags[par_name] -= {'limited'}
 
     def add_matrix_parameter_constraint(self, names, values, matrix, matrix_type='cov', uncertainties=None,
                                         relative=False):
@@ -571,10 +777,14 @@ class FitBase(FileIOMixin, object):
                 _par_indices.append(self.poi_names.index(_name))
             except ValueError:
                 raise self.EXCEPTION_TYPE('Unknown parameter name: %s' % _name)
+
         self._fit_param_constraints.append(GaussianMatrixParameterConstraint(
             indices=_par_indices, values=values, matrix=matrix, matrix_type=matrix_type, uncertainties=uncertainties,
             relative=relative
         ))
+
+        for _name in names:
+            self._parameter_tags.setdefault(_name, set()).add('constrained')
 
     def add_parameter_constraint(self, name, value, uncertainty, relative=False):
         """
@@ -593,9 +803,12 @@ class FitBase(FileIOMixin, object):
             _index = self.poi_names.index(name)
         except ValueError:
             raise self.EXCEPTION_TYPE('Unknown parameter name: %s' % name)
+
         self._fit_param_constraints.append(GaussianSimpleParameterConstraint(
             index=_index, value=value, uncertainty=uncertainty, relative=relative
         ))
+
+        self._parameter_tags.setdefault(name, set()).add('constrained')
 
     def get_matching_errors(self, matching_criteria=None, matching_type='equal'):
         """
@@ -683,7 +896,12 @@ class FitBase(FileIOMixin, object):
                                "specification '{}', expected one of: 'data', 'model'...".format(reference))
 
         _ret = _reference_object.add_simple_error(err_val=err_val,
-                                                  name=name, correlation=correlation, relative=relative, **kwargs)
+                                                  name=name, correlation=correlation, relative=relative,
+                                                  splittable=False, **kwargs)
+
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
 
         return _ret
 
@@ -721,6 +939,10 @@ class FitBase(FileIOMixin, object):
         _ret = _reference_object.add_matrix_error(err_matrix=err_matrix, matrix_type=matrix_type,
                                                   name=name, err_val=err_val, relative=relative, **kwargs)
 
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
+
         return _ret
 
     def disable_error(self, err_id):
@@ -746,7 +968,31 @@ class FitBase(FileIOMixin, object):
         """
         if self._cost_function.needs_errors and not self._data_container.has_errors:
             self._cost_function.on_no_errors()
+
+        # initialize the Nexus (if not done already)
+        if not self._nexus:
+            self._init_nexus()
+
+        self._init_fit_parameters()  # ensure parameters are up to date
+
+        _cost_node = self._nexus.get('cost')
+        _unwired_parameters = []
+        for _pn in self._fit_param_names:
+            if not self._nexus.get(_pn).is_descendant_of(_cost_node):
+                _unwired_parameters.append(_pn)
+
+        # raise exception if no dependency is declared between cost and fit parameters
+        if _unwired_parameters:
+            raise self.EXCEPTION_TYPE(
+                "Cannot fit: cost does not depend on the "
+                "following fit parameters: {!r}".format(_unwired_parameters))
+
+        # initialize the fitter (if not done already)
+        if not self._fitter:
+            self._initialize_fitter(self._minimizer, self._minimizer_kwargs)
+
         self._fitter.do_fit()
+
         self._loaded_result_dict = None
         self._update_parameter_formatters()
 
@@ -832,14 +1078,33 @@ class FitBase(FileIOMixin, object):
                 _pf.get_formatted(with_name=True,
                                   with_value=True,
                                   with_errors=True,
+                                  with_tags=True,
                                   format_as_latex=False,
                                   asymmetric_error=asymmetric_parameter_errors)
             )
             output_stream.write('\n')
         output_stream.write('\n')
 
-        output_stream.write(_indent + "Model Parameter Correlations\n")
-        output_stream.write(_indent + "============================\n\n")
+        if self._nuisance_parameter_formatters:
+            output_stream.write(_indent + "Nuisance Parameters\n")
+            output_stream.write(_indent + "===================\n\n")
+
+            for _pf in self._nuisance_parameter_formatters:
+                output_stream.write(_indent * 2)
+                output_stream.write(
+                    _pf.get_formatted(with_name=True,
+                                      with_value=True,
+                                      with_errors=True,
+                                      with_tags=False,
+                                      format_as_latex=False,
+                                      # keep nuisance parameter errors symmetric (?)
+                                      asymmetric_error=False)
+                )
+                output_stream.write('\n')
+            output_stream.write('\n')
+
+        output_stream.write(_indent + "Parameter Correlations\n")
+        output_stream.write(_indent + "======================\n\n")
 
         _cor_mat_content = self.parameter_cor_mat
         if _cor_mat_content is not None:

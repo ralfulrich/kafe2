@@ -1,19 +1,12 @@
-from collections import OrderedDict
 from copy import deepcopy
 
-import six
-import numpy as np
+from .._base import FitException, FitBase, DataContainerBase, CostFunction
+from ..util import function_library, add_in_quadrature, invert_matrix
 
-from ...config import kc
-from ...core import NexusFitter, Nexus
-from ...core.fitters.nexus import Parameter, Alias
-from .._base import (FitException, FitBase, DataContainerBase,
-                     ModelParameterFormatter, CostFunction)
 from .container import HistContainer
 from .cost import get_from_string
 from .model import HistParametricModel, HistModelFunction
 from .plot import HistPlotAdapter
-from ..util import function_library, add_in_quadrature, collect, invert_matrix
 
 __all__ = ["HistFit"]
 
@@ -28,11 +21,11 @@ class HistFit(FitBase):
     MODEL_FUNCTION_TYPE = HistModelFunction
     PLOT_ADAPTER_TYPE = HistPlotAdapter
     EXCEPTION_TYPE = HistFitException
+    COST_FUNCTION_GETTER = get_from_string
     RESERVED_NODE_NAMES = {'data', 'model', 'model_density', 'cost',
                           'data_error', 'model_error', 'total_error',
                           'data_cov_mat', 'model_cov_mat', 'total_cov_mat',
                           'data_cor_mat', 'model_cor_mat', 'total_cor_mat'}
-
 
     def __init__(self,
                  data,
@@ -51,7 +44,21 @@ class HistFit(FitBase):
         :param cost_function: the cost function
         :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         """
-        FitBase.__init__(self)
+        FitBase.__init__(
+            self,
+            model_function_spec=(model_density_function, model_density_antiderivative),
+            cost_function_spec=cost_function,
+            minimizer=minimizer,
+            minimizer_kwargs=minimizer_kwargs
+        )
+
+        # set the data after the parameters, model and cost functions have been set
+        self.data = data
+
+    # -- private methods
+
+    def _init_model_function(self, model_function_spec):
+        model_density_function, model_density_antiderivative = model_function_spec
 
         # set/construct the model function object
         if isinstance(model_density_function, self.__class__.MODEL_FUNCTION_TYPE):
@@ -62,41 +69,13 @@ class HistFit(FitBase):
                                        % (model_density_antiderivative, self.__class__, model_density_function))
             self._model_function = model_density_function
         else:
-            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_density_function, model_density_antiderivative=model_density_antiderivative)
+            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(
+                model_density_function,
+                model_density_antiderivative=model_density_antiderivative
+            )
 
         # validate the model function for this fit
         self._validate_model_function_for_fit_raise()
-
-        # set and validate the cost function
-        if isinstance(cost_function, CostFunction):
-            self._cost_function = cost_function
-        elif isinstance(cost_function, str):
-            self._cost_function = get_from_string(cost_function)
-            if self._cost_function is None:
-                raise self.__class__.EXCEPTION_TYPE(
-                    "Unknown cost function: %s" % cost_function)
-        elif callable(cost_function):
-            self._cost_function = CostFunction(cost_function)
-        else:
-            raise self.__class__.EXCEPTION_TYPE(
-                "Invalid cost function: %s" % cost_function)
-
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
-
-        # retrieve fit parameter information
-        self._init_fit_parameters()
-
-        # set the data after the cost_function has been set and nexus has been initialized
-        self.data = data
-
-        # initialize the Nexus
-        self._init_nexus()
-
-        # initialize the Fitter
-        self._initialize_fitter(minimizer, minimizer_kwargs)
-
-    # -- private methods
 
     def _init_nexus(self):
         FitBase._init_nexus(self)

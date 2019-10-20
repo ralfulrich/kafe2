@@ -7,15 +7,15 @@ import sys
 import textwrap
 
 from ...tools import print_dict_as_table
-from ...core import NexusFitter, Nexus
-from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
+from ...core.fitters.nexus import Parameter, Alias, Array
 from ...config import kc
 from .._base import FitException, FitBase, DataContainerBase, CostFunction
+from .._base.format import ModelParameterFormatter
 from .container import XYContainer
 from .cost import get_from_string
 from .model import XYParametricModel, XYModelFunction
 from .plot import XYPlotAdapter
-from ..util import function_library, add_in_quadrature, collect, invert_matrix
+from ..util import function_library, add_in_quadrature, string_join_if, invert_matrix, maybe_invert_matrix
 
 
 __all__ = ["XYFit"]
@@ -31,6 +31,7 @@ class XYFit(FitBase):
     MODEL_FUNCTION_TYPE = XYModelFunction
     PLOT_ADAPTER_TYPE = XYPlotAdapter
     EXCEPTION_TYPE = XYFitException
+    COST_FUNCTION_GETTER = get_from_string
     RESERVED_NODE_NAMES = {'y_data', 'y_model', 'cost',
                            'x_error', 'y_data_error', 'y_model_error', 'total_error',
                            'x_cov_mat', 'y_data_cov_mat', 'y_model_cov_mat', 'total_cov_mat',
@@ -63,33 +64,6 @@ class XYFit(FitBase):
         :param x_error_algorithm: algorithm for handling x errors. Can be one of: ``'iterative linear'``, ``'nonlinear'``
         :type x_error_algorithm: str
         """
-        FitBase.__init__(self)
-
-        # set the labels
-        self.labels = [None, None]
-
-        # set/construct the model function object
-        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
-            self._model_function = model_function
-        else:
-            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function)
-
-        # validate the model function for this fit
-        self._validate_model_function_for_fit_raise()
-
-        # set and validate the cost function
-        if isinstance(cost_function, CostFunction):
-            self._cost_function = cost_function
-        elif isinstance(cost_function, str):
-            self._cost_function = get_from_string(cost_function)
-            if self._cost_function is None:
-                raise self.__class__.EXCEPTION_TYPE(
-                    "Unknown cost function: %s" % cost_function)
-        elif callable(cost_function):
-            self._cost_function = CostFunction(cost_function)
-        else:
-            raise self.__class__.EXCEPTION_TYPE(
-                "Invalid cost function: %s" % cost_function)
 
         # validate x error algorithm
         if x_error_algorithm not in XYFit.X_ERROR_ALGORITHMS:
@@ -97,44 +71,97 @@ class XYFit(FitBase):
                 "Unknown value for 'x_error_algorithm': "
                 "{}. Expected one of:".format(
                     x_error_algorithm,
-                    ', '.join(['iterative linear', 'nonlinear'])
+                    ', '.join(XYFit.X_ERROR_ALGORITHMS)
                 )
             )
         else:
             self._x_error_algorithm = x_error_algorithm
 
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
+        FitBase.__init__(
+            self,
+            model_function_spec=model_function,
+            cost_function_spec=cost_function,
+            minimizer=minimizer,
+            minimizer_kwargs=minimizer_kwargs
+        )
 
-        # retrieve fit parameter information
-        self._init_fit_parameters()
+        # set the labels
+        self.labels = [None, None]
 
-        # set the data after the cost_function has been set and nexus has been initialized
+        # set the data after the parameters, model and cost functions have been set
         self.data = xy_data
-
-        # initialize the Nexus
-        self._init_nexus()
-
-        # initialize the Fitter
-        self._initialize_fitter(minimizer, minimizer_kwargs)
 
 
     # -- private methods
+
+    def _init_fit_parameters(self):
+        FitBase._init_fit_parameters(self)
+
+        # -- set up nuisance parameters representing model `x` shifts
+
+        # cannot determine x-nuisance parameters if no nexus is present
+        if not self._nexus:
+            return
+
+        # only add x-nuisance parameters for the correct algorithm
+        if self._x_error_algorithm != 'nuisance':
+            return
+
+        # # only fit uncorrelated x nuisance parameters if there are
+        # # uncorrelated x errors (i.e. if uncor x cov mat is invertible)
+        # if self._nexus.get('x_total_uncor_cov_mat_inverse').value is None:
+        #     return
+
+        # determine name of nuisance parameter array in nexus
+        _nuis_vec_name = 'x_model_uncor_shift_nuis'
+
+        # retrieve nuisance parameter array node from nexus
+        _nuis_vec_node = self._nexus.get(_nuis_vec_name)
+
+        # node not found -> no x-nuisance treatment requested skip
+        if _nuis_vec_node is None:
+            return
+
+        # skip adding nuisance parameters if cost function does not depend on them
+        if not _nuis_vec_node.is_descendant_of(self._nexus.get('cost')):
+            return
+
+        # append names of nuisance parameters to list of fit parameters
+        _new_nuis_par_names = [
+            _nuis_node.name
+            for _nuis_node in _nuis_vec_node.iter_children()
+        ]
+        self._fit_param_names += _new_nuis_par_names
+
+        # add a formatter for each nuisance parameter created
+        _existing_formatters = self._nuisance_parameter_formatters or []
+        self._nuisance_parameter_formatters = _existing_formatters + [
+            ModelParameterFormatter(_nuis_par_name, tags={'nuisance'})
+            for _nuis_par_name in _new_nuis_par_names
+        ]
+
+        self._fitter = None  # need to reinitialize fitter with new fit parameters
 
     def _init_nexus(self, nexus=None):
 
         nexus = FitBase._init_nexus(self, nexus)
 
-        # -- "projected" (i.e. "x" + "y") error-related nodes
+        # -- the `y_model` implicitly depends on the `x_model` and the `poi_values`
+        nexus.add_dependency(
+            'y_model',
+            depends_on=(
+                'x_model',
+                'poi_values'
+            )
+        )
 
-        self._add_property_to_nexus(
-            'projected_xy_total_error', depends_on='y_model')
+        # -- "projected" (i.e. "x" + "y") error-related nodes
 
         self._add_property_to_nexus(
             'projected_xy_total_cov_mat', nexus=nexus)
 
         nexus.add_function(
-            invert_matrix,
+            maybe_invert_matrix,
             func_name='projected_xy_total_cov_mat_inverse',
             par_names=('projected_xy_total_cov_mat',),
             existing_behavior='replace_if_empty'
@@ -145,35 +172,81 @@ class XYFit(FitBase):
             depends_on=(
                 'poi_values',
                 'x_model',
-                'x_total_cov_mat',
-                'y_total_cov_mat'
-            )
-        )
-        nexus.add_dependency(
-            'projected_xy_total_error',
-            depends_on=(
-                'poi_values',
-                'x_model',
-                'x_total_error',
-                'y_total_error'
+                'x_total_uncor_cov_mat',
+                'y_total_uncor_cov_mat'
             )
         )
 
-        # -- additional dependencies
-        nexus.add_dependency(
-            'y_model',
-            depends_on=(
-                'x_model',
-                'poi_values'
+        # -- nuisance parameters due to x shifts
+
+        _nuis_vec_name = 'x_model_uncor_shift_nuis'
+        _nuis = nexus.add(
+            Array([
+                Parameter(0.0, name=string_join_if((_nuis_vec_name, str(i))))
+                for i in range(self._data_container.size)
+            ], name=_nuis_vec_name)
+        )
+
+        # `x_model` is `x_data` plus shift due to nuisance parameters
+        nexus.add_function(
+            #lambda data, shift: data + shift,
+            lambda data, shift, ushift: data + shift + ushift,
+            func_name='x_model',
+            par_names=('x_data', 'x_total_cor_shift', _nuis_vec_name),
+            existing_behavior='replace'
+        )
+
+        # update parametric model when `x_model` changes
+        nexus.get('x_model').register_callback(
+            lambda: self.MODEL_TYPE.x.fset(
+                self._param_model,
+                (
+                    nexus.get('x_model').value
+                    # + nexus.get('x_total_cor_shift').value
+                    # + nexus.get('x_model_uncor_shift_nuis').value
+                )
             )
         )
 
-        nexus.add_dependency(
-            'x_model',
-            depends_on=(
-                'x_data',
+        # -- maybe add nuisance parameters to fit parameters
+
+        if self._x_error_algorithm == 'nuisance':
+
+            # add nuisance parameters to 'parameter_values' dependencies
+            nexus.add_dependency(
+                'parameter_values',
+                depends_on=_nuis_vec_name,
             )
-        )
+
+            # # -- register gaussian penalty term for nuisance parameters
+            #
+            # # get previously added nuisance parameters
+            # _nuis_par_nodes = [
+            #     _node.name for _node in self._nexus.get('nuisance_penalty').iter_children()
+            # ]
+            #
+            # # add x nuisance parameters to penalty
+            # self._nexus.add_function(
+            #     lambda *args: np.sum([np.sum(arg**2) for arg in args]),
+            #     func_name='nuisance_penalty',
+            #     par_names=_nuis_par_nodes+[_nuis_vec_name],
+            #     existing_behavior='replace'
+            # )
+
+        # -- re-wire nominal `y` covariance matrix (used in standard cost function)
+
+        if self._x_error_algorithm == 'nuisance':
+            nexus.add_alias(
+                'y_cov_mat',
+                alias_for='y_total_uncor_cov_mat',
+                existing_behavior='replace'
+            )
+        else:
+            nexus.add_alias(
+                'y_cov_mat',
+                alias_for='projected_xy_total_cov_mat',
+                existing_behavior='replace'
+            )
 
         # add the original function name as an alias for 'y_model'
         _func_node = nexus.get(self._model_function.name)
@@ -184,9 +257,7 @@ class XYFit(FitBase):
             )
         elif isinstance(_func_node, Alias):
             # remap the alias to point to 'y_model'
-            _func_node.set_children([
-                nexus.get('y_model')
-            ])
+            _func_node.ref = nexus.get('y_model')
         elif _func_node.name == 'y_model':
             # function node exists and is called 'y_model'
             pass
@@ -208,7 +279,7 @@ class XYFit(FitBase):
         '''perform actions on projected error nodes: freeze, update, unfreeze...'''
         if isinstance(actions, str):
             actions = (actions,)
-        for _node_name in ('projected_xy_total_error', 'projected_xy_total_cov_mat'):
+        for _node_name in ('projected_xy_total_cov_mat',):
             for action in actions:
                 _node = self._nexus.get(_node_name)
                 getattr(_node, action)()
@@ -243,25 +314,24 @@ class XYFit(FitBase):
         if isinstance(new_data, self.CONTAINER_TYPE):
             self._data_container = deepcopy(new_data)
         elif isinstance(new_data, DataContainerBase):
-            raise XYFitException("Incompatible container type '%s' (expected '%s')"
-                                 % (type(new_data), self.CONTAINER_TYPE))
+            raise self.__class__.EXCEPTION_TYPE(
+                "Incompatible container type '%s' (expected '%s')"
+                % (type(new_data), self.CONTAINER_TYPE))
         else:
             _x_data = new_data[0]
             _y_data = new_data[1]
             self._data_container = self._new_data_container(_x_data, _y_data, dtype=float)
 
-        if self._nexus:
-            self._nexus.get('_external').mark_for_update()
+        self._nexus = None
 
     def _set_new_parametric_model(self):
         self._param_model = self._new_parametric_model(
-            self.x_model,
+            self.x_data,
             self._model_function,
             self.poi_values
         )
 
-        if self._nexus:
-            self._nexus.get('_external').mark_for_update()
+        self._nexus = None
 
     # -- public properties
 
@@ -295,11 +365,12 @@ class XYFit(FitBase):
 
     @property
     def x_model(self):
+        return self._param_model.x if self._param_model else self.x_data
         # if cost function uses x-nuisance parameters, consider these
-        if self._cost_function.get_flag("need_x_nuisance") and self._data_container.has_uncor_x_errors:
-            return self.x_data + (self.x_uncor_nuisance_values * self.x_data_error)
-        else:
-            return self.x_data
+        # if self._cost_function.get_flag("need_x_nuisance") and self._data_container.has_uncor_x_errors:
+        #     return self.x_data + (self.x_uncor_nuisance_values * self.x_data_error)
+        # else:
+        #     return self.x_data
 
     @property
     def x_error(self):
@@ -543,7 +614,7 @@ class XYFit(FitBase):
         _precision = 0.01 * np.min(_x_errors)
         _derivatives = self._param_model.eval_model_function_derivative_by_x(
             dx=_precision,
-            model_parameters=self.parameter_values
+            model_parameters=self.poi_values
         )
 
         return np.sqrt(self.y_total_error**2 + self.x_total_error**2 * _derivatives**2)
@@ -571,17 +642,17 @@ class XYFit(FitBase):
         self._param_model.x = self.x_model
 
         if np.count_nonzero(self._data_container.x_err) == 0:
-            return self.y_total_cov_mat
+            return self.y_total_uncor_cov_mat
 
         _x_errors = self.x_total_error
         _precision = 0.01 * np.min(_x_errors)
         _derivatives = self._param_model.eval_model_function_derivative_by_x(
             dx=_precision,
-            model_parameters=self.parameter_values
+            model_parameters=self.poi_values
         )
         _outer_product = np.outer(_derivatives, _derivatives)
 
-        return self.y_total_cov_mat + self.x_total_cov_mat * _outer_product
+        return self.y_total_uncor_cov_mat + self.x_total_uncor_cov_mat * _outer_product
 
 
     @property
@@ -719,11 +790,9 @@ class XYFit(FitBase):
                                                    reference=reference,
                                                    axis=axis)
 
-        # need to reinitialize the nexus, since simple errors are
-        # possibly relevant for nuisance parameters
-        self._init_nexus()
-        # initialize the Fitter
-        self._initialize_fitter(self._minimizer, self._minimizer_kwargs)
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
 
         return _ret
 
@@ -755,11 +824,9 @@ class XYFit(FitBase):
                                                    reference=reference,
                                                    axis=axis)
 
-        # do not reinitialize the nexus, since matrix errors are not
-        # relevant for nuisance parameters
-
-        # but *do* update projected xy error nodes
-        self._with_projected_nodes('update')
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
 
         return _ret
 
@@ -780,6 +847,16 @@ class XYFit(FitBase):
         if self._cost_function.needs_errors and not self._data_container.has_y_errors:
             self._cost_function.on_no_errors()
 
+        # initialize the Nexus (if not done already)
+        if not self._nexus:
+            self._init_nexus()
+
+        self._init_fit_parameters()  # ensure parameters are up to date
+
+        # initialize the fitter (if not done already)
+        if not self._fitter:
+            self._initialize_fitter(self._minimizer, self._minimizer_kwargs)
+
         # explicitly update (frozen) projected covariance matrix before fit
         self._with_projected_nodes('update')
 
@@ -788,6 +865,9 @@ class XYFit(FitBase):
                 # 'nonlinear' x error fitting: one iteration;
                 # projected covariance matrix is updated during minimization
                 self._with_projected_nodes(('update', 'unfreeze'))
+                super(XYFit, self).do_fit()
+
+            elif self._x_error_algorithm == 'nuisance':
                 super(XYFit, self).do_fit()
 
             elif self._x_error_algorithm == 'iterative linear':
@@ -814,7 +894,9 @@ class XYFit(FitBase):
                         break  # fit converged
 
                     _previous_cost_function_value = self.cost_function_value
-
+            else:
+                raise NotImplementedError(
+                    "No implementation for x error algorithm '{}'".format(self._x_error_algorithm))
         else:
             # no 'x' errors: fit as usual
 
@@ -849,35 +931,31 @@ class XYFit(FitBase):
         """
         Calculate and return the nuisance parameter values.
 
-        NOTE: currently only works for calculating nuisance parameters
-        for correlated 'y' uncertainties.
+        NOTE: this only calculates nuisance parameters
+        for correlated 'x` and `y' uncertainties.
 
         :return: vector containing the nuisance parameter values
         :rtype: ``numpy.array``
         """
-        _uncor_cov_mat_inverse = self.y_data_uncor_cov_mat_inverse
-        _cor_cov_mat = self._y_data_nuisance_cor_design_mat
-        _y_data = self.y_data
-        _y_model = self.eval_model_function(x=self.x_model)
 
-        # retrieve the errors for which to assign nuisance parameters
-        _nuisance_error_objects = self.get_matching_errors(
-            matching_criteria=dict(
-                axis=1,  # cannot use 'y' here
-                correlated=True
-            )
-        )
+        _shifts = []
+        for _cont in (self._data_container, self._param_model):
+            try:
+                _shifts.extend(
+                    _cont.get_shift_coefficients('y', self.y_data - self.y_model))
+            except np.linalg.LinAlgError:
+                # matrix is singular
+                pass
 
-        _nuisance_size = len(_nuisance_error_objects)
-        _residuals = _y_data - _y_model
+        for _cont in (self._data_container, self._param_model):
+            try:
+                _shifts.extend(
+                    _cont.get_shift_coefficients('x', self.x_data - self.x_model))
+            except np.linalg.LinAlgError:
+                # matrix is singular
+                pass
 
-        _left_side = (_cor_cov_mat).dot(_uncor_cov_mat_inverse).dot(np.transpose(_cor_cov_mat))
-        _left_side += np.eye(_nuisance_size, _nuisance_size)
-        _right_side = np.asarray(_cor_cov_mat).dot(np.asarray(_uncor_cov_mat_inverse)).dot(_residuals)
-
-        _nuisance_vector = np.linalg.solve(_left_side, np.transpose(_right_side))
-
-        return _nuisance_vector
+        return _shifts
 
     def generate_plot(self):
         _plot = super(XYFit, self).generate_plot()

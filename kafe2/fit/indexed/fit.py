@@ -3,19 +3,15 @@ from copy import deepcopy
 
 import numpy as np
 import sys
-import six
 import textwrap
 
 from ...tools import print_dict_as_table
-from ...config import kc
-from ...core import NexusFitter, Nexus
-from ...core.fitters.nexus import Parameter, Alias, Empty, NexusError
 from .._base import FitException, FitBase, DataContainerBase, CostFunction
 from .container import IndexedContainer
 from .cost import get_from_string
 from .model import IndexedParametricModel, IndexedModelFunction
 from .plot import IndexedPlotAdapter
-from ..util import function_library, add_in_quadrature, collect, invert_matrix
+from ..util import function_library, add_in_quadrature, invert_matrix
 
 
 __all__ = ["IndexedFit"]
@@ -31,6 +27,7 @@ class IndexedFit(FitBase):
     MODEL_FUNCTION_TYPE = IndexedModelFunction
     PLOT_ADAPTER_TYPE = IndexedPlotAdapter
     EXCEPTION_TYPE = IndexedFitException
+    COST_FUNCTION_GETTER = get_from_string
     RESERVED_NODE_NAMES = {'data', 'model', 'cost',
                           'data_error', 'model_error', 'total_error',
                           'data_cov_mat', 'model_cov_mat', 'total_cov_mat',
@@ -53,45 +50,16 @@ class IndexedFit(FitBase):
         :param cost_function: the cost function
         :type cost_function: :py:class:`~kafe2.fit._base.CostFunction`-derived or unwrapped native Python function
         """
-        FitBase.__init__(self)
+        FitBase.__init__(
+            self,
+            model_function_spec=model_function,
+            cost_function_spec=cost_function,
+            minimizer=minimizer,
+            minimizer_kwargs=minimizer_kwargs
+        )
 
-        # set/construct the model function object
-        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
-            self._model_function = model_function
-        else:
-            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function)
-
-        # validate the model function for this fit
-        self._validate_model_function_for_fit_raise()
-
-        # set and validate the cost function
-        if isinstance(cost_function, CostFunction):
-            self._cost_function = cost_function
-        elif isinstance(cost_function, str):
-            self._cost_function = get_from_string(cost_function)
-            if self._cost_function is None:
-                raise self.__class__.EXCEPTION_TYPE(
-                    "Unknown cost function: %s" % cost_function)
-        elif callable(cost_function):
-            self._cost_function = CostFunction(cost_function)
-        else:
-            raise self.__class__.EXCEPTION_TYPE(
-                "Invalid cost function: %s" % cost_function)
-
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
-
-        # retrieve fit parameter information
-        self._init_fit_parameters()
-
-        # set the data after the cost_function has been set and nexus has been initialized
+        # set the data after the parameters, model and cost functions have been set
         self.data = data
-
-        # initialize the Nexus
-        self._init_nexus()
-
-        # initialize the Fitter
-        self._initialize_fitter(minimizer, minimizer_kwargs)
 
     # -- private methods
 
@@ -113,7 +81,7 @@ class IndexedFit(FitBase):
     def _set_new_parametric_model(self):
         self._param_model = self._new_parametric_model(
             self._model_function,
-            self.parameter_values,
+            self.poi_values,
             shape_like=self.data
         )
 

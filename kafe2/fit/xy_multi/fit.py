@@ -32,6 +32,7 @@ class XYMultiFit(XYFit):
     MODEL_FUNCTION_TYPE = XYMultiModelFunction
     PLOT_ADAPTER_TYPE = None  # TODO: re-configure this when implemented
     EXCEPTION_TYPE = XYMultiFitException
+    COST_FUNCTION_GETTER = get_from_string
     RESERVED_NODE_NAMES = {'y_data', 'y_model', 'cost',
                            'x_error', 'y_data_error', 'y_model_error', 'total_error',
                            'x_cov_mat', 'y_data_cov_mat', 'y_model_cov_mat', 'total_cov_mat',
@@ -66,38 +67,6 @@ class XYMultiFit(XYFit):
         :param minimizer_kwargs: kwargs provided to the minimizer constructor
         :type minimizer_kwargs: native Python dictionary
         """
-        FitBase.__init__(self)
-
-        # set the labels
-        self.labels = [None, None]
-
-        # constructing the model function needs the data container
-        self._set_new_data(xy_data)
-
-        # set/construct the model function object
-        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
-            self._model_function = model_function
-            self._model_function.data_indices = self._data_container.data_indices
-        else:
-            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(model_function,
-                                        self._data_container.data_indices)
-
-        # validate the model function for this fit
-        self._validate_model_function_for_fit_raise()
-
-        # set and validate the cost function
-        if isinstance(cost_function, CostFunction):
-            self._cost_function = cost_function
-        elif isinstance(cost_function, str):
-            self._cost_function = get_from_string(cost_function)
-            if self._cost_function is None:
-                raise self.__class__.EXCEPTION_TYPE(
-                    "Unknown cost function: %s" % cost_function)
-        elif callable(cost_function):
-            self._cost_function = CostFunction(cost_function)
-        else:
-            raise self.__class__.EXCEPTION_TYPE(
-                "Invalid cost function: %s" % cost_function)
 
         # validate x error algorithm
         if x_error_algorithm not in XYFit.X_ERROR_ALGORITHMS:
@@ -105,34 +74,71 @@ class XYMultiFit(XYFit):
                 "Unknown value for 'x_error_algorithm': "
                 "{}. Expected one of:".format(
                     x_error_algorithm,
-                    ', '.join(['iterative linear', 'nonlinear'])
+                    ', '.join(XYFit.X_ERROR_ALGORITHMS)
                 )
             )
         else:
             self._x_error_algorithm = x_error_algorithm
 
-        self._fit_param_constraints = []
-        self._loaded_result_dict = None
+        # cannot use base implementation: data container must be
+        # set before model function (TODO: fix)
 
-        # retrieve fit parameter information
+        self._data_container = None
+        self._param_model = None
+        self._nexus = None
+        self._fitter = None
+        self._poi_value_dict = None
+        self._poi_names = None
+        self._fit_param_names = None
+        self._fit_param_constraints = []
+        self._model_function = None
+        self._cost_function = None
+        self._nuisance_parameter_formatters = None
+        self._parameter_tags = dict()
+        self._loaded_result_dict = None  # contains potential fit results when loading from a file
+        self._minimizer = minimizer
+        self._minimizer_kwargs = minimizer_kwargs
+
+        # set the labels
+        self.labels = [None, None]
+
+        self._set_new_data(xy_data)
+
+        self._init_model_function(model_function)
+
+        self._model_function.data_indices = self._data_container.data_indices
+
+        self._init_cost_function(cost_function)
         self._init_fit_parameters()
 
-        # create the child ParametricModel object
+        # validate cost function
+        _data_and_cost_compatible, _reason = self._cost_function.is_data_compatible(self.data)
+        if not _data_and_cost_compatible:
+            raise self.EXCEPTION_TYPE('Fit data and cost function are not compatible: %s' % _reason)
+
         self._set_new_parametric_model()
+
         # TODO: check where to update this (set/release/etc.)
         # FIXME: nicer way than len()?
         self._cost_function.ndf = self._data_container.size - len(self._param_model.parameters)
 
-        # initialize the Nexus
-        self._init_nexus()
-
-        # initialize the Fitter
-        self._initialize_fitter(minimizer, minimizer_kwargs)
-
     # -- private methods
 
-    def _init_nexus(self):
-        super(XYMultiFit, self)._init_nexus()  # same nexus wiring as for simple XYFit
+    def _init_model_function(self, model_function):
+        # set/construct the model function object
+        if isinstance(model_function, self.__class__.MODEL_FUNCTION_TYPE):
+            self._model_function = model_function
+        else:
+            self._model_function = self.__class__.MODEL_FUNCTION_TYPE(
+                model_function,
+                self._data_container.data_indices
+            )
+
+        # validate the model function for this fit
+        self._validate_model_function_for_fit_raise()
+
+    def _init_nexus(self, nexus=None):
+        super(XYMultiFit, self)._init_nexus(nexus)  # same nexus wiring as for simple XYFit
 
     def _calculate_y_error_band(self, num_points=100):
         # TODO: config for num_points
@@ -174,24 +180,15 @@ class XYMultiFit(XYFit):
         if isinstance(new_data, self.CONTAINER_TYPE):
             self._data_container = deepcopy(new_data)
         elif isinstance(new_data, DataContainerBase):
-            raise XYMultiFitException("Incompatible container type '%s' (expected '%s')"
-                                      % (type(new_data), self.CONTAINER_TYPE))
+            raise self.__class__.EXCEPTION_TYPE(
+                "Incompatible container type '%s' (expected '%s')"
+                % (type(new_data), self.CONTAINER_TYPE))
         else:
             self._data_container = self._new_data_container(new_data, dtype=float)
         # TODO: Think of a better way when setting new data to not always delete all labels
         self._axis_labels = [[None, None] for _ in range(self._data_container.num_datasets)]
 
-        # mark nexus nodes for update
-        if self._nexus:
-            self._nexus.get('x_data').mark_for_update()
-            self._nexus.get('y_data').mark_for_update()
-
-    def _set_new_parametric_model(self):
-        self._param_model = self._new_parametric_model(
-            self.x_model,
-            self._model_function,
-            self.poi_values
-        )
+        self._nexus = None
 
     # -- public properties
 
@@ -202,11 +199,7 @@ class XYMultiFit(XYFit):
 
     @property
     def x_model(self):
-        # if cost function uses x-nuisance parameters, consider these
-        if self._cost_function.get_flag("need_x_nuisance") and self._data_container.has_uncor_x_errors:
-            return self.x_data + (self.x_uncor_nuisance_values * self.x_data_error)
-        else:
-            return self.x_data
+        return self._param_model.x if self._param_model else self.x_data
 
     @property
     def x_error(self):
@@ -624,11 +617,9 @@ class XYMultiFit(XYFit):
                                         reference=reference,
                                         axis=axis)
 
-        # need to reinitialize the nexus, since simple errors are
-        # possibly relevant for nuisance parameters
-        self._init_nexus()
-        # initialize the Fitter
-        self._initialize_fitter(self._minimizer, self._minimizer_kwargs)
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
 
         return _ret
 
@@ -672,7 +663,6 @@ class XYMultiFit(XYFit):
         return self.add_matrix_error('x', err_matrix=_total_correlation_matrix, matrix_type='cor',
                                      name=name, err_val=_total_err_val, relative=relative, reference=reference)
 
-
     def add_matrix_error(self, axis, err_matrix, matrix_type,
                          name=None, err_val=None, relative=False, reference='data'):
         """
@@ -702,8 +692,9 @@ class XYMultiFit(XYFit):
                                         reference=reference,
                                         axis=axis)
 
-        # do not reinitialize the nexus, since matrix errors are not
-        # relevant for nuisance parameters
+        # reset Nexus and Fitter (errors may be relevant for nuisance parameters)
+        self._nexus = None
+        self._fitter = None
 
         return _ret
 
