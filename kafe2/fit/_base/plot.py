@@ -561,7 +561,7 @@ class Plot(object):
         # set the managed fit objects
         if isinstance(fit_objects, MultiFit):
             self._multifit = fit_objects
-            fit_objects = fit_objects.fits
+            fit_objects = self._multifit._get_fits_for_report()
         else:
             self._multifit = None
         try:

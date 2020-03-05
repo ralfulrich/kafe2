@@ -1,5 +1,5 @@
 import sys
-from copy import copy
+from copy import copy, deepcopy
 import numpy as np
 
 from .._base import FitBase
@@ -365,6 +365,29 @@ class MultiFit(FitBase):
     def _set_new_parametric_model(self):
         raise NotImplementedError()
 
+    def _get_fits_for_report(self):
+        _fit_copies = []
+        for _i, _fit_i in enumerate(self.fits):
+            # Performing a deepcopy of single fits after they're part of a MultiFit causes an Error.
+            # Workaround: shallow copy single fit and deep copy the parts that are changed.
+            _fit_copy = copy(_fit_i)
+            _fit_copy._data_container = deepcopy(_fit_copy._data_container)
+            _fit_copy._param_model = deepcopy(_fit_copy._param_model)
+            for _err_dict_key in self._shared_error_dicts:
+                _err_dict = self._shared_error_dicts[_err_dict_key]
+                _error = _err_dict["err"]
+                if _i in _error.fit_indices:
+                    if _err_dict["reference_name"] == "data":
+                        _fit_copy._data_container._add_error_object(
+                            name=_err_dict_key, error_object=_error, axis=_err_dict["axis"])
+                    elif _err_dict["reference_name"] == "model":
+                        _fit_copy._param_model._add_error_object(
+                            name=_err_dict_key, error_object=_error, axis=_err_dict["axis"])
+                    else:
+                        raise ValueError()
+            _fit_copies.append(_fit_copy)
+        return _fit_copies
+
     # -- public properties
 
     @property
@@ -623,7 +646,7 @@ class MultiFit(FitBase):
         """
         _indent = ' ' * 4
 
-        for _i, _fit in enumerate(self._fits):
+        for _i, _fit in enumerate(self._get_fits_for_report()):
             _header_string = '#########\n'
             if _i > 9:
                 _header_string = '#' + _header_string
